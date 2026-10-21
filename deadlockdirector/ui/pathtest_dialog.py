@@ -5,10 +5,11 @@ import time
 
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import (QComboBox, QDialog, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLineEdit,
+from PySide6.QtCore import QStandardPaths
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLineEdit,
                                QPushButton, QVBoxLayout)
 
-from deadlockdirector import detect, keysender, pathtest
+from deadlockdirector import capture, detect, keysender, pathtest, render
 from deadlockdirector.ui.panels import button, label, spin
 
 INTRO = ('This checks whether Deadlock can follow a smooth camera path. Each frame, the app writes the next camera '
@@ -16,11 +17,11 @@ INTRO = ('This checks whether Deadlock can follow a smooth camera path. Each fra
          'loads the frame itself. Keys are only sent while Deadlock is the active window.').format(cfg=pathtest.FRAME_CFG)
 
 STEPS = ('<ol>'
-         '<li>Launch Deadlock with <code>-condebug</code> and open a replay (pausing it makes the test easiest to judge).</li>'
+         '<li>Launch Deadlock with <code>-condebug</code> in <b>borderless or windowed</b> mode and open a replay.</li>'
          '<li>Press F7 and run the bind command below once.</li>'
          '<li>Release the camera into free-cam, aim at something, and run <code>spec_pos</code>. Close the console.</li>'
-         '<li>Click <b>Read start position</b>, then <b>Start</b>, and click back into Deadlock within 3 seconds. '
-         "Don't touch the mouse while it runs.</li>"
+         '<li>Click <b>Read start position</b>, then <b>Render to video</b> (or the live test), and click back into '
+         "Deadlock within 3 seconds. Don't touch the mouse or keyboard while it runs.</li>"
          '</ol>')
 
 
@@ -34,7 +35,7 @@ class PathTestDialog(QDialog):
     def __init__(self, settings, parent=None):
         QDialog.__init__(self, parent)
         self.setWindowTitle('Smooth path test')
-        self.resize(620, 640)
+        self.resize(660, 900)
         self.settings = settings
         self.start = None
         self.stopFlag = threading.Event()
@@ -89,13 +90,43 @@ class PathTestDialog(QDialog):
         form.addRow('Camera command', self.command)
         layout.addWidget(box)
 
+        self.startButton = button('Live test (3 s countdown)', self._toggle)
+        layout.addWidget(self.startButton)
+
+        box = QGroupBox('Render to video (frame by frame, smooth)')
+        form = QFormLayout(box)
+        form.addRow(label('The replay stays paused. For each frame the app moves the camera, steps the replay one '
+                          'tick, waits for Deadlock to draw it and captures the window. Run Deadlock in '
+                          '<b>borderless or windowed</b> mode, keep it in front, and leave the mouse alone.',
+                          'hint', wrap=True))
+        videos = QStandardPaths.writableLocation(QStandardPaths.MoviesLocation) or os.path.expanduser('~')
+        self.output = QLineEdit(self.settings.value('pathtest/output') or os.path.join(videos, 'deadlock_orbit.mp4'))
+        browse = QPushButton('Browse…')
+        browse.clicked.connect(self._pickOutput)
+        row = QHBoxLayout()
+        row.addWidget(self.output, 1)
+        row.addWidget(browse)
+        form.addRow('Save video to', row)
+        self.fps = spin(10, 240, 64, decimals=0, step=1, suffix=' fps')
+        self.fps.setToolTip('One replay tick per frame. At 64 fps that is real-time speed if Deadlock runs at 64 ticks/s.')
+        form.addRow('Video frame rate', self.fps)
+        self.advance = QCheckBox('Replay plays during the shot (unticked = frozen moment)')
+        self.advance.setChecked(True)
+        form.addRow(self.advance)
+        self.settle = spin(20, 1000, 80, decimals=0, step=10, suffix=' ms')
+        self.settle.setToolTip('How long to give Deadlock to draw each frame before capturing. Raise it if the '
+                               'video shows repeated or half-updated frames.')
+        form.addRow('Wait per frame', self.settle)
+        layout.addWidget(box)
+        self.renderButton = button('Render to video (3 s countdown)', self._toggleRender, accent=True)
+        layout.addWidget(self.renderButton)
+
         self.statusLabel = label('', 'heading', wrap=True)
         layout.addWidget(self.statusLabel)
-        self.startButton = button('Start (3 s countdown)', self._toggle, accent=True)
-        layout.addWidget(self.startButton)
         layout.addStretch(1)
         if not keysender.AVAILABLE:
             self.startButton.setEnabled(False)
+            self.renderButton.setEnabled(False)
             self.statusLabel.setText('This test only runs on Windows.')
         self._refreshBind()
 
@@ -136,17 +167,20 @@ class PathTestDialog(QDialog):
     def _status(self, text):
         self.statusLabel.setText(text)
 
-    def _toggle(self):
-        if self.worker and self.worker.is_alive():
-            self.stopFlag.set()
-            return
+    def _pickOutput(self):
+        path, _ = QFileDialog.getSaveFileName(self, 'Save video', self.output.text(), 'MP4 video (*.mp4)')
+        if path:
+            self.output.setText(path)
+
+    def _prepare(self):
+        """Validate the setup. Returns (cfg path, camera path, template, key) or None."""
         folder = self.cfgDir.text().strip()
         if not os.path.isdir(folder):
             self.statusLabel.setText('Set the Deadlock cfg folder first (…/Deadlock/game/citadel/cfg).')
-            return
+            return None
         if self.start is None:
             self.statusLabel.setText('Read the start position first.')
-            return
+            return None
         self.settings.set_value('pathtest/cfgdir', folder)
         target = os.path.join(folder, pathtest.FRAME_CFG + '.cfg')
         path = pathtest.orbit_path(self.start, self.distance.value(), self.duration.value())
@@ -154,11 +188,89 @@ class PathTestDialog(QDialog):
         _, scancode, extended = pathtest.BIND_KEYS[self.key.currentIndex()]
         # Write the first frame now so the bind works even before the test runs.
         pathtest.write_frame(target, pathtest.frame_commands(template, *path(0.0)))
+        return target, path, template, (scancode, extended)
+
+    def _busy(self):
+        if self.worker and self.worker.is_alive():
+            self.stopFlag.set()
+            return True
+        return False
+
+    def _toggle(self):
+        if self._busy():
+            return
+        prepared = self._prepare()
+        if prepared is None:
+            return
+        target, path, template, (scancode, extended) = prepared
         self.stopFlag.clear()
         self.startButton.setText('Stop')
+        self.renderButton.setEnabled(False)
         args = (target, path, template, scancode, extended, self.duration.value(), self.rate.currentData())
         self.worker = threading.Thread(target=self._run, args=args, daemon=True)
         self.worker.start()
+
+    def _toggleRender(self):
+        if self._busy():
+            return
+        prepared = self._prepare()
+        if prepared is None:
+            return
+        if not render.ffmpeg_exe():
+            self.statusLabel.setText('The bundled ffmpeg is missing, so video can not be encoded.')
+            return
+        output = self.output.text().strip()
+        if not output.lower().endswith('.mp4'):
+            output += '.mp4'
+        self.settings.set_value('pathtest/output', output)
+        target, path, template, key = prepared
+        fps = int(self.fps.value())
+        frames = render.plan_frames(path, self.duration.value(), fps, 1.0 if self.advance.isChecked() else 0.0)
+        self.stopFlag.clear()
+        self.renderButton.setText('Stop rendering')
+        self.startButton.setEnabled(False)
+        args = (target, template, key, frames, fps, output, self.settle.value() / 1000.0)
+        self.worker = threading.Thread(target=self._runRender, args=args, daemon=True)
+        self.worker.start()
+
+    def _runRender(self, target, template, key, frames, fps, output, settle):
+        for remaining in (3, 2, 1):
+            if self.stopFlag.is_set():
+                self.signals.finished.emit('Stopped.')
+                return
+            self.signals.status.emit('Click into Deadlock… rendering starts in {}'.format(remaining))
+            time.sleep(1.0)
+        rect = capture.deadlock_rect()
+        if rect is None:
+            self.signals.finished.emit('Deadlock was not the active window, so there was nothing to capture.')
+            return
+        started = time.perf_counter()
+        grabber = encoder = None
+        try:
+            grabber = capture.Grabber(rect)
+            encoder = render.FfmpegEncoder(output, grabber.size, fps)
+            renderer = render.Renderer(
+                target, template, lambda: keysender.tap(*key), grabber.grab, encoder, settle=settle,
+                isFocused=keysender.foreground_is_deadlock, stopped=self.stopFlag.is_set,
+                progress=lambda i, n: self.signals.status.emit('Rendering frame {} / {}'.format(i, n)))
+            with keysender.precise_timer():
+                written = renderer.run(frames)
+        except Exception as error:
+            self.signals.finished.emit('Render failed: {}'.format(error))
+            return
+        finally:
+            if grabber:
+                grabber.close()
+            code = encoder.close() if encoder else None
+        took = time.perf_counter() - started
+        if code:
+            self.signals.finished.emit('ffmpeg failed (code {}). Details: {}'.format(code, encoder.logPath))
+            return
+        stale = ' {} frames never changed on screen in time; raise "Wait per frame" if you see stutter.'.format(
+            renderer.stale) if renderer.stale else ''
+        self.signals.finished.emit('{}Rendered {} frames ({}x{}, {:.1f} s of video) in {:.0f} s.{}\n\nSaved to {}'.format(
+            'Stopped early. ' if self.stopFlag.is_set() else '', written, grabber.size[0], grabber.size[1],
+            written / float(fps), took, stale, output))
 
     def _run(self, target, path, template, scancode, extended, duration, rate):
         for remaining in (3, 2, 1):
@@ -203,7 +315,10 @@ class PathTestDialog(QDialog):
 
     def _finished(self, text):
         self.statusLabel.setText(text)
-        self.startButton.setText('Start (3 s countdown)')
+        self.startButton.setText('Live test (3 s countdown)')
+        self.renderButton.setText('Render to video (3 s countdown)')
+        self.startButton.setEnabled(keysender.AVAILABLE)
+        self.renderButton.setEnabled(keysender.AVAILABLE)
 
     def closeEvent(self, event):
         self.stopFlag.set()

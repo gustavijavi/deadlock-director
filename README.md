@@ -93,6 +93,11 @@ path test** checks whether that can drive a smooth camera path. About 30 times a
 camera position to `cfg/ddir_frame.cfg` and taps a key you've bound to `exec ddir_frame`, so the game loads each frame
 itself. The test path orbits the point you're looking at, read from `spec_pos` output in the `-condebug` console log.
 
+**Render to video** in the same window renders the orbit frame by frame instead: the replay stays paused, and for each
+frame the app moves the camera, steps the replay one tick (`demo_step_tick`), waits for Deadlock to draw it, captures
+the game window (like OBS window capture) and encodes an MP4 with the bundled ffmpeg. Live playback stutters because
+it can't sync to the game's frame rate, but lockstep rendering can't. Run Deadlock in borderless or windowed mode.
+
 > ⚠️ This sends simulated key presses to Deadlock (only while it is the active window), the same mechanism macro tools
 > such as AutoHotkey use. It never reads or writes game memory. Valve doesn't publish rules on simulated input, so use
 > it in the replay viewer only, and only if you're comfortable with that.

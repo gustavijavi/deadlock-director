@@ -35,10 +35,10 @@ jobs:
 
       # Folder build: fastest startup, least likely to trip antivirus heuristics.
       - name: Build (folder)
-        run: pyinstaller --noconfirm --windowed --name DeadlockDirector --paths . deadlockdirector/__main__.py
+        run: pyinstaller --noconfirm --windowed --name DeadlockDirector --paths . --collect-all imageio_ffmpeg deadlockdirector/__main__.py
       # Single-file build: one portable DeadlockDirector.exe.
       - name: Build (single exe)
-        run: pyinstaller --noconfirm --windowed --onefile --name DeadlockDirector --distpath dist-onefile --paths . deadlockdirector/__main__.py
+        run: pyinstaller --noconfirm --windowed --onefile --name DeadlockDirector --distpath dist-onefile --paths . --collect-all imageio_ffmpeg deadlockdirector/__main__.py
 
       - name: Package
         shell: pwsh
