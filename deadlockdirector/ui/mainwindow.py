@@ -14,6 +14,7 @@ from deadlockdirector.ui import theme
 from deadlockdirector.ui.document import Document
 from deadlockdirector.ui.panels import (CameraPanel, ConnectionPanel, ConsolePanel, KeyframeInspector, ReplayPanel,
                                         SequencePanel, scrolling)
+from deadlockdirector.ui.pathtest_dialog import PathTestDialog
 from deadlockdirector.ui.pathview import PathView
 from deadlockdirector.ui.settings_dialog import SettingsDialog
 from deadlockdirector.ui.timeline import TimelineWidget, format_time
@@ -157,6 +158,8 @@ class MainWindow(QMainWindow):
         menu = self.menuBar().addMenu('&View')
         for dock in self.docks.values():
             menu.addAction(dock.toggleViewAction())
+        menu = self.menuBar().addMenu('&Tools')
+        menu.addAction(self.action('Smooth path test…', self.showPathTest))
         menu = self.menuBar().addMenu('&Help')
         menu.addAction(self.action('How to use', self.showHelp, 'F1'))
         menu.addAction(self.action('About', self.showAbout))
@@ -344,6 +347,9 @@ class MainWindow(QMainWindow):
         if dialog.exec():
             self.game.lastSent.clear()
             self.cameraPanel.refreshFov()
+
+    def showPathTest(self):
+        PathTestDialog(self.settings, self).exec()
 
     def showHelp(self):
         QMessageBox.information(self, 'How to use Deadlock Director', HELP)

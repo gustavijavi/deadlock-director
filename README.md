@@ -86,6 +86,17 @@ Notes:
 * There's no way to open a console port after the game has started. It has to be a launch option.
 * Don't use `-tools`: Deadlock doesn't ship the developer files it needs and fails with "Unable to load module modtools".
 
+## Smooth path test (Tools menu)
+
+Deadlock opens no console port to outside programs, but it does run `exec <file>` from a key bind. **Tools → Smooth
+path test** checks whether that can drive a smooth camera path. About 30 times a second, the app writes the next
+camera position to `cfg/ddir_frame.cfg` and taps a key you've bound to `exec ddir_frame`, so the game loads each frame
+itself. The test path orbits the point you're looking at, read from `spec_pos` output in the `-condebug` console log.
+
+> ⚠️ This sends simulated key presses to Deadlock (only while it is the active window), the same mechanism macro tools
+> such as AutoHotkey use. It never reads or writes game memory. Valve doesn't publish rules on simulated input, so use
+> it in the replay viewer only, and only if you're comfortable with that.
+
 ## Features
 
 * **Auto-detect and connect**: spots `deadlock.exe` and connects as soon as the console port opens.

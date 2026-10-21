@@ -7,6 +7,8 @@ import re
 
 _NUMBER = re.compile(r'[-+]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][-+]?\d+)?')
 _ANSI = re.compile(r'\x1b\[[0-9;]*[A-Za-z]')
+# -condebug console.log lines start with "MM/DD HH:MM:SS ".
+_LOG_TIMESTAMP = re.compile(r'^\d{1,2}/\d{1,2} \d{1,2}:\d{2}:\d{2}\s+')
 
 MARKER_PREFIX = 'DDIR'
 
@@ -35,8 +37,9 @@ class CameraState(object):
 
 
 def clean_line(line):
-    """Strip ANSI colour codes, carriage returns and NULs from console output."""
-    return _ANSI.sub('', line).replace('\r', '').replace('\x00', '').strip()
+    """Strip ANSI colour codes, log timestamps, carriage returns and NULs."""
+    line = _ANSI.sub('', line).replace('\r', '').replace('\x00', '').strip()
+    return _LOG_TIMESTAMP.sub('', line)
 
 
 def parse_camera(text):

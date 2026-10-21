@@ -1,0 +1,9 @@
+10/21 13:37:12 [ResourceSystem] Failed loading resource "models/heroes_wip/familiar/clips/ui_hero_reveal.vnmclip_c" (ERROR_FILEOPEN: File not found)
+10/21 13:37:12 [ResourceSystem] Failed loading resource "models/heroes_wip/priest/clips/ui_hero_reveal.vnmclip_c" (ERROR_FILEOPEN: File not found)
+10/21 13:37:12 [ResourceSystem] Failed loading resource "models/heroes_wip/artist/clips/ui_hero_reveal.vnmclip_c" (ERROR_FILEOPEN: File not found)
+10/21 13:37:12 [ResourceSystem] Failed loading resource "models/heroes_wip/unicorn/clips/ui_hero_reveal.vnmclip_c" (ERROR_FILEOPEN: File not found)
+10/21 13:37:13 [ResourceSystem] Failed loading resource "models/heroes_wip/werewolf/clips/ui_hero_reveal.vnmclip_c" (ERROR_FILEOPEN: File not found)
+10/21 13:37:13 spec_goto 11710.9 -6072.1 -264.5 -0.0 188.2
+10/21 13:37:13 [ResourceSystem] Failed loading resource "models/heroes_wip/werewolf/transform/clips/ui_hero_reveal.vnmclip_c" (ERROR_FILEOPEN: File not found)
+10/21 13:37:45 CGameRules - paused on tick 3264
+10/21 13:37:51 spec_goto 1089.6 9974.8 1386.3 25.3 31.5

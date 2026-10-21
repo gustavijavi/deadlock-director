@@ -88,6 +88,8 @@ def test_history_undo_redo():
     ('setpos 1 2 3;setang 4 5 6', [1, 2, 3, 4, 5, 6]),
     ('  10.0 20.0 30.0 -5.0 179.9', [10, 20, 30, -5, 179.9, 0]),
     ('\x1b[32mspec_goto 1e2 2 3 4 5\x1b[0m', [100, 2, 3, 4, 5, 0]),
+    # Real line from Deadlock's -condebug console.log.
+    ('10/21 13:37:13 spec_goto 11710.9 -6072.1 -264.5 -0.0 188.2', [11710.9, -6072.1, -264.5, 0, 188.2, 0]),
 ])
 def test_parse_camera(line, expected):
     state = console.parse_camera(line)
@@ -101,6 +103,7 @@ def test_parse_camera_rejects_noise():
 
 def test_parse_tick():
     assert console.parse_tick('Demo: x.dem\nCurrent tick: 12345') == 12345
+    assert console.parse_tick('10/21 13:37:45 CGameRules - paused on tick 3264') == 3264
     assert console.parse_tick('nothing here') is None
 
 
