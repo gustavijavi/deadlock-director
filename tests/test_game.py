@@ -1,0 +1,101 @@
+"""End-to-end tests against the fake network console in tools/."""
+import time
+
+import pytest
+from PySide6.QtCore import QCoreApplication, QSettings
+
+from deadlockdirector.game import STATUS_CONNECTED, DeadlockGame
+from deadlockdirector.playback import SequencePlayer
+from deadlockdirector.sequence import Sequence
+from deadlockdirector.settings import Settings
+
+
+def wait_for(condition, timeout=3.0):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        QCoreApplication.processEvents()
+        if condition():
+            return True
+        time.sleep(0.005)
+    return condition()
+
+
+@pytest.fixture
+def game(fake, tmp_path):
+    server, port = fake
+    settings = Settings(QSettings(str(tmp_path / 'settings.ini'), QSettings.IniFormat))
+    settings.set('connection/port', port)
+    settings.set('connection/autoconnect', False)
+    game = DeadlockGame(settings)
+    game.detectTimer.stop()
+    game.connectToGame()
+    assert wait_for(lambda: game.status == STATUS_CONNECTED)
+    yield game
+    game.disconnectFromGame()
+
+
+def test_query_camera(game, fake):
+    server, _ = fake
+    server.game.camera = [10.0, 20.0, 30.0, 5.0, 45.0]
+    result = []
+    game.queryCamera(result.append)
+    assert wait_for(lambda: result)
+    assert result[0].position == [10.0, 20.0, 30.0]
+    assert result[0].rotation == [5.0, 45.0, 0.0]
+
+
+def test_set_camera_and_dedupe(game, fake):
+    server, _ = fake
+    wait_for(lambda: False, 0.4)  # let the on-connect camera query finish
+    game.setCamera([1, 2, 3], [4, 5, 0])
+    assert wait_for(lambda: server.game.camera == [1.0, 2.0, 3.0, 4.0, 5.0])
+    count = len(server.game.history)
+    game.setCamera([1, 2, 3], [4, 5, 0])
+    wait_for(lambda: False, 0.2)
+    assert len(server.game.history) == count
+
+
+def test_query_tick(game, fake):
+    server, _ = fake
+    server.game.paused = True
+    server.game.tick = 4321
+    result = []
+    game.queryTick(result.append)
+    assert wait_for(lambda: result)
+    assert result[0] == 4321
+
+
+def test_capture_from_in_game_bind(game, fake):
+    server, _ = fake
+    got = []
+    game.queryCamera(got.append)
+    assert wait_for(lambda: got)
+    captured = []
+    game.captureFromGame.connect(captured.append)
+    # Simulate the user pressing a key bound to spec_pos: output arrives
+    # without our markers around it.
+    game.client.send('spec_pos')
+    assert wait_for(lambda: captured)
+
+
+def test_synced_playback(game, fake):
+    server, _ = fake
+    settings = game.settings
+    settings.set('playback/preroll', 0.0)
+    settings.set('playback/rate', 120)
+    seq = Sequence()
+    seq.start_tick = 2000
+    seq.track('position').add(0, [0, 0, 100], 'linear')
+    seq.track('position').add(0.5, [500, 0, 100], 'linear')
+    seq.track('rotation').add(0, [10, 0, 0], 'linear')
+    player = SequencePlayer(game, settings, seq)
+    player.play()
+    assert wait_for(lambda: player.state == 'stopped' and player.time >= 0.5, 3.0)
+    wait_for(lambda: server.game.camera[0] == 500.0, 1.0)
+    assert server.game.camera[:3] == [500.0, 0.0, 100.0]
+    history = server.game.history
+    assert 'demo_gototick 2000' in history
+    assert 'demo_resume' in history
+    assert history[-1] == 'demo_pause' or 'demo_pause' in history[-3:]
+    moves = [h for h in history if h.startswith('spec_goto')]
+    assert len(moves) > 10  # streamed, not just the two keyframes
