@@ -38,21 +38,25 @@ can't give an advantage in a live match.
 
 ## Quick start (Windows)
 
-1. Install [Python 3.10+](https://www.python.org/downloads/) (tick "Add to PATH").
-2. Double-click `run.bat`. The first run creates a virtual environment and installs PySide6, psutil and websocket-client.
-3. In the **Connection** panel click **Launch Deadlock with console port**, or add this to
+1. Download **`DeadlockDirector.exe`** from the [latest release](../../releases/tag/latest) and double-click it.
+   There's also a `.zip` version that starts faster: unzip it and run `DeadlockDirector.exe` inside.
+   Windows SmartScreen may warn about an unsigned app: click *More info → Run anyway*.
+2. In the **Connection** panel click **Launch Deadlock with console port**, or add this to
    *Steam → Deadlock → Properties → Launch Options*:
 
    ```
    -console -netconport 2121
    ```
-4. In Deadlock open a replay (*Match history → Watch replay*). The status turns green (**Connected**).
-5. Release the camera into free-cam (WASD), fly to your first spot and press **K**.
-6. Move the playhead (click the ruler or press → a few times), fly to the next spot, press **K** again.
-7. Press **Space** to play the shot.
+3. In Deadlock open a replay (*Match history → Watch replay*). The status turns green (**Connected**).
+4. Release the camera into free-cam (WASD), fly to your first spot and press **K**.
+5. Move the playhead (click the ruler or press → a few times), fly to the next spot, press **K** again.
+6. Press **Space** to play the shot.
 
-Prebuilt Windows builds: push this repo to GitHub and the included workflow (`.github/workflows/build.yml`)
-builds a standalone `DeadlockDirector.exe` with PyInstaller, available as a workflow artifact.
+**Running from source instead:** install [Python 3.10+](https://www.python.org/downloads/) and double-click `run.bat`.
+The first run creates a virtual environment and installs the dependencies.
+
+The Windows builds come from `.github/workflows/build.yml`. Every push to `main` runs the tests, builds with
+PyInstaller and refreshes the `latest` release.
 
 ## Features
 

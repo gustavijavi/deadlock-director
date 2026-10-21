@@ -3,9 +3,11 @@ name: build
 on:
   push:
     branches: [main]
-    tags: ['v*']
   pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   test:
@@ -30,8 +32,41 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -r requirements-dev.txt
-      - run: pyinstaller --noconfirm --windowed --name DeadlockDirector --paths . deadlockdirector/__main__.py
+
+      # Folder build: fastest startup, least likely to trip antivirus heuristics.
+      - name: Build (folder)
+        run: pyinstaller --noconfirm --windowed --name DeadlockDirector --paths . deadlockdirector/__main__.py
+      # Single-file build: one portable DeadlockDirector.exe.
+      - name: Build (single exe)
+        run: pyinstaller --noconfirm --windowed --onefile --name DeadlockDirector --distpath dist-onefile --paths . deadlockdirector/__main__.py
+
+      - name: Package
+        shell: pwsh
+        run: |
+          Copy-Item README.md dist/DeadlockDirector/
+          Compress-Archive -Path dist/DeadlockDirector -DestinationPath DeadlockDirector-windows.zip
+          Copy-Item dist-onefile/DeadlockDirector.exe DeadlockDirector.exe
+
       - uses: actions/upload-artifact@v4
         with:
           name: DeadlockDirector-windows
-          path: dist/DeadlockDirector
+          path: |
+            DeadlockDirector-windows.zip
+            DeadlockDirector.exe
+
+      - name: Publish "latest" release
+        if: github.event_name != 'pull_request'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest DeadlockDirector.exe DeadlockDirector-windows.zip \
+            --target "${{ github.sha }}" \
+            --title "Deadlock Director (latest build)" \
+            --notes "Windows build of commit ${{ github.sha }}.
+
+          - **DeadlockDirector.exe**: single portable file, just double-click it.
+          - **DeadlockDirector-windows.zip**: the same app as a folder (starts faster). Unzip and run DeadlockDirector.exe.
+
+          Then launch Deadlock with \`-console -netconport 2121\` (or use the button in the app) and open a replay. See the README for details."
