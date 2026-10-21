@@ -18,7 +18,10 @@ DEFAULTS = {
     'connection/launch_options': '-console -netconport 2121',
     'connection/autoconnect': True,
 
-    'commands/camera': 'spec_goto {x:.2f} {y:.2f} {z:.2f} {pitch:.2f} {yaw:.2f}',
+    # Deadlock's console: "spec_goto x y z <pitch yaw optional>" moves the
+    # spectator camera, "spec_setang pitch yaw" points it. Neither is a cheat
+    # command. Both are sent because spec_goto alone was reported to ignore angles.
+    'commands/camera': 'spec_goto {x:.2f} {y:.2f} {z:.2f} {pitch:.2f} {yaw:.2f}; spec_setang {pitch:.2f} {yaw:.2f}',
     'commands/camera_query': 'spec_pos',
     'commands/fov': '',
     'commands/timescale': 'demo_timescale {value:.3f}',
@@ -45,10 +48,9 @@ DEFAULTS = {
 }
 
 CAMERA_PRESETS = [
-    ('spec_goto (position + angles)', 'spec_goto {x:.2f} {y:.2f} {z:.2f} {pitch:.2f} {yaw:.2f}'),
-    ('spec_goto position only', 'spec_goto {x:.2f} {y:.2f} {z:.2f}'),
-    ('spec_goto + setang (needs sv_cheats in the replay)', 'spec_goto {x:.2f} {y:.2f} {z:.2f} {pitch:.2f} {yaw:.2f}; setang {pitch:.2f} {yaw:.2f} {roll:.2f}'),
-    ('setpos + setang (needs sv_cheats in the replay)', 'setpos {x:.2f} {y:.2f} {z:.2f}; setang {pitch:.2f} {yaw:.2f} {roll:.2f}'),
+    ('spec_goto + spec_setang (default)', 'spec_goto {x:.2f} {y:.2f} {z:.2f} {pitch:.2f} {yaw:.2f}; spec_setang {pitch:.2f} {yaw:.2f}'),
+    ('spec_setpos + spec_setang', 'spec_setpos {x:.2f} {y:.2f} {z:.2f}; spec_setang {pitch:.2f} {yaw:.2f}'),
+    ('spec_goto only (position + angles)', 'spec_goto {x:.2f} {y:.2f} {z:.2f} {pitch:.2f} {yaw:.2f}'),
 ]
 
 

@@ -56,9 +56,12 @@ class FakeGame(object):
                 return [' '.join(args)]
             if name == 'spec_pos':
                 return ['spec_goto {:.2f} {:.2f} {:.2f} {:.2f} {:.2f}'.format(*self.camera)]
-            if name == 'spec_goto':
-                values = [float(a) for a in args[:5]]
+            if name in ('spec_goto', 'spec_setpos'):
+                values = [float(a) for a in args[:5 if name == 'spec_goto' else 3]]
                 self.camera[:len(values)] = values
+                return []
+            if name == 'spec_setang':
+                self.camera[3:3 + len(args[:2])] = [float(a) for a in args[:2]]
                 return []
             if name == 'demo_pause':
                 self.paused = True

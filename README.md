@@ -33,7 +33,7 @@ What it **does not** do:
 * simulate keyboard or mouse input
 * modify game files
 * use `-insecure` or anything else that turns VAC off
-* enable `sv_cheats` by itself. Two optional camera presets use `setang`, which only works with `sv_cheats 1` inside a replay. They are off unless you pick them.
+* enable `sv_cheats`. Moving and pointing the camera (`spec_goto`, `spec_setang`) are ordinary spectator commands, not cheat commands.
 
 To detect the game it only lists running process names (`deadlock.exe`) and reads Steam's library files to
 find the install folder. Camera commands only work while you are spectating or watching a replay, so the app
@@ -129,9 +129,9 @@ below come from community observer guides and the Source 2 engine. Every one of 
 | --- | --- | --- |
 | Console port | `-netconport 2121` | **Ignored by Deadlock in testing** (the port never opened). Kept in case Valve enables it. |
 | VConsole | `-vconsole`, port 29000 | How Valve's VConsole2 tool connects to Source 2 games. `-tools` crashes Deadlock; `-vconsole` is **not yet confirmed**. |
-| Move camera | `spec_goto x y z pitch yaw` | Community guides confirm `spec_goto` moves the spectator camera. Some report that **it ignores pitch/yaw** and only moves the position. If rotation doesn't follow, try the presets in Settings. The `setang` variants need `sv_cheats 1` in the replay. |
-| Read camera | `spec_pos` | Confirmed: prints X Y Z pitch yaw. The parser accepts any line with 5–6 numbers. |
-| Pause / resume / seek / speed | `demo_pause`, `demo_resume`, `demo_gototick`, `demo_timescale` | Standard Source 2 demo commands. Not verified against Deadlock's replay viewer. |
+| Move camera | `spec_goto x y z pitch yaw; spec_setang pitch yaw` | **Confirmed to exist** in Deadlock's console, neither cheat-flagged. `spec_setang` ("Points the spectator camera") is sent too because `spec_goto` alone was reported to ignore angles. |
+| Read camera | `spec_pos` | Exists, but is flagged **cheat**, so it may need `sv_cheats 1` in a replay. The parser accepts any line with 5–6 numbers. |
+| Pause / resume / seek / speed | `demo_pause`, `demo_resume`, `demo_gototick`, `demo_timescale` | **Confirmed to exist** in Deadlock's console, not cheat-flagged. |
 | Read tick | `demo_info` + regex | Best effort. If **Use current** doesn't fill the start tick, type the tick in by hand. |
 | Tick rate | 64 ticks/s | Unconfirmed for Deadlock. If seeks land in the wrong spot, change it in the Sequence panel. |
 | FOV | *(disabled)* | No known spectator FOV variable yet. Type `find fov` in the Console tab, then fill in the command (e.g. `some_fov_cvar {value}`). |
