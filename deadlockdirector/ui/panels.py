@@ -1,9 +1,11 @@
 """Dockable side panels."""
-from PySide6.QtCore import Qt, QTimer
+import threading
+
+from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QGuiApplication, QTextCharFormat, QColor
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGridLayout, QGroupBox,
-                               QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton, QScrollArea,
-                               QSpinBox, QVBoxLayout, QWidget)
+                               QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QPushButton,
+                               QScrollArea, QSpinBox, QVBoxLayout, QWidget)
 
 from deadlockdirector import detect, game as gamemod, interpolation
 from deadlockdirector.console import split_commands
@@ -71,12 +73,18 @@ def scrolling(widget):
     return area
 
 
+class _DiagnoseResult(QObject):
+    ready = Signal(str, list)
+
+
 class ConnectionPanel(QWidget):
 
     def __init__(self, game, settings, parent=None):
         QWidget.__init__(self, parent)
         self.game = game
         self.settings = settings
+        self.diagnoseResult = _DiagnoseResult(self)
+        self.diagnoseResult.ready.connect(self._showDiagnosis)
         layout = QVBoxLayout(self)
 
         self.dot = QLabel('●')
@@ -107,6 +115,9 @@ class ConnectionPanel(QWidget):
                                 tip='Asks Steam to start Deadlock with "-console -netconport <port>" for this launch only.'))
         layout.addWidget(button('Copy launch options', self._copy,
                                 tip='To set them permanently: Steam > Deadlock > Properties > Launch Options'))
+        self.diagnoseButton = button('Diagnose connection', self._diagnose,
+                                     tip='Checks whether Deadlock is running and which ports it has opened')
+        layout.addWidget(self.diagnoseButton)
         self.options = label('', 'hint', wrap=True)
         layout.addWidget(self.options)
         install = detect.find_install()
@@ -129,13 +140,39 @@ class ConnectionPanel(QWidget):
         QGuiApplication.clipboard().setText(detect.launch_options(self.port.value()))
         self.options.setText('Copied! Paste into Steam > Deadlock > Properties > Launch Options.')
 
+    def _diagnose(self):
+        self.diagnoseButton.setEnabled(False)
+        self.diagnoseButton.setText('Diagnosing…')
+        host, port = self.settings.get('connection/host'), self.settings.get('connection/port')
+
+        def work():
+            try:
+                verdict, details = detect.diagnose(host, port)
+            except Exception as error:
+                verdict, details = 'unknown', ['Diagnosis failed: {}'.format(error)]
+            self.diagnoseResult.ready.emit(verdict, details)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _showDiagnosis(self, verdict, details):
+        self.diagnoseButton.setEnabled(True)
+        self.diagnoseButton.setText('Diagnose connection')
+        if verdict == 'ok' and not self.game.isConnected():
+            self.game.connectToGame()
+        advice = detect.ADVICE.get(verdict, '').format(port=self.settings.get('connection/port'))
+        box = QMessageBox(QMessageBox.Information if verdict == 'ok' else QMessageBox.Warning,
+                          'Connection diagnosis', advice, QMessageBox.Ok, self)
+        box.setInformativeText('\n'.join(details))
+        box.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        box.exec()
+
     def refresh(self, *args):
         status = self.game.status
         port = self.settings.get('connection/port')
         text, color = {
             gamemod.STATUS_CONNECTED: ('Connected to the Deadlock console. Open a replay to start directing.', theme.GOOD),
-            gamemod.STATUS_WAITING: ('Deadlock is running but its console port {} is not open. Restart it with '
-                                     '"-netconport {}" in its launch options.'.format(port, port), theme.WARN),
+            gamemod.STATUS_WAITING: ('Waiting for Deadlock\'s console port {}. It needs "-netconport {}" in its '
+                                     'launch options. Stuck here? Click "Diagnose connection".'.format(port, port), theme.WARN),
             gamemod.STATUS_NOT_RUNNING: ('Deadlock is not running.', theme.TEXT_DIM),
             gamemod.STATUS_DISCONNECTED: ('Disconnected.', theme.TEXT_DIM),
         }.get(status, ('', theme.TEXT_DIM))

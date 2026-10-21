@@ -71,7 +71,9 @@ class DeadlockGame(QObject):
             self._setStatus(STATUS_NOT_RUNNING)
         elif not self.manualDisconnect:
             self._setStatus(STATUS_WAITING)
-        if self.running is not False and not self.manualDisconnect and self.settings.get('connection/autoconnect'):
+        # Try even when no Deadlock process was spotted: the detection is
+        # only a hint, and a failed localhost connect costs nothing.
+        if not self.manualDisconnect and self.settings.get('connection/autoconnect'):
             self.client.connectTo(self.settings.get('connection/host'), self.settings.get('connection/port'))
 
     def _onConnectedChanged(self, connected):
