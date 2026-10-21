@@ -77,10 +77,16 @@ class PathTestDialog(QDialog):
         self.duration = spin(2, 60, 8, decimals=1, step=1, suffix=' s')
         form.addRow('Duration', self.duration)
         self.rate = QComboBox()
-        for rate in (20, 30, 45, 60):
+        for rate in (30, 60, 90, 120, 144):
             self.rate.addItem('{} frames/s'.format(rate), rate)
         self.rate.setCurrentIndex(1)
+        self.rate.setToolTip('Matching your monitor / fps_max reduces stutter, but live playback cannot sync to '
+                             'the game\'s frames exactly.')
         form.addRow('Update rate', self.rate)
+        self.command = QComboBox()
+        self.command.addItem('spec_goto + spec_setang', None)
+        self.command.addItem('spec_setpos + spec_setang', 'spec_setpos {x:.2f} {y:.2f} {z:.2f}; spec_setang {pitch:.2f} {yaw:.2f}')
+        form.addRow('Camera command', self.command)
         layout.addWidget(box)
 
         self.statusLabel = label('', 'heading', wrap=True)
@@ -144,7 +150,7 @@ class PathTestDialog(QDialog):
         self.settings.set_value('pathtest/cfgdir', folder)
         target = os.path.join(folder, pathtest.FRAME_CFG + '.cfg')
         path = pathtest.orbit_path(self.start, self.distance.value(), self.duration.value())
-        template = self.settings.get('commands/camera')
+        template = self.command.currentData() or self.settings.get('commands/camera')
         _, scancode, extended = pathtest.BIND_KEYS[self.key.currentIndex()]
         # Write the first frame now so the bind works even before the test runs.
         pathtest.write_frame(target, pathtest.frame_commands(template, *path(0.0)))
@@ -162,6 +168,7 @@ class PathTestDialog(QDialog):
             self.signals.status.emit('Click into Deadlock… starting in {}'.format(remaining))
             time.sleep(1.0)
         frames = taps = skipped = unfocused = 0
+        tapTimes = []
         with keysender.precise_timer():
             pacer = pathtest.Pacer(rate)
             while not self.stopFlag.is_set():
@@ -178,14 +185,20 @@ class PathTestDialog(QDialog):
                     skipped += 1
                 elif keysender.tap(scancode, extended):
                     taps += 1
+                    tapTimes.append(time.perf_counter())
                 if frames % rate == 0:
                     self.signals.status.emit('Running… {:.0f} / {:.0f} s'.format(t, duration))
                 pacer.wait()
         elapsed = max(0.001, pacer.elapsed())
+        gaps = [(b - a) * 1000.0 for a, b in zip(tapTimes, tapTimes[1:])]
+        timing = ''
+        if gaps:
+            timing = ' Gap between taps: target {:.1f} ms, actual {:.1f}–{:.1f} ms.'.format(
+                1000.0 / rate, min(gaps), max(gaps))
         report = ('Done. {} frames in {:.1f} s ({:.0f}/s): {} key taps sent, {} skipped because the game had the '
-                  'file open, {} while Deadlock was not focused.\n\nDid the camera glide smoothly around the point, '
+                  'file open, {} while Deadlock was not focused.{}\n\nDid the camera glide smoothly around the point, '
                   'jump between positions, or not move at all?').format(
-            frames, elapsed, frames / elapsed, taps, skipped, unfocused)
+            frames, elapsed, frames / elapsed, taps, skipped, unfocused, timing)
         self.signals.finished.emit('Stopped early. ' + report if self.stopFlag.is_set() else report)
 
     def _finished(self, text):
