@@ -60,14 +60,15 @@ PyInstaller and refreshes the `latest` release.
 
 ## Troubleshooting the connection
 
-Click **Diagnose connection** in the Connection panel. It checks whether Deadlock is running and which TCP ports
-it has opened. It reads Windows' connection table (the same list `netstat -ano` prints), not the game.
+Click **Diagnose connection** in the Connection panel. It checks whether Deadlock is running, which TCP ports it
+has opened, and what each one is (it listens first, and only sends a harmless `echo` line to ports that stay silent). It reads Windows' connection table (the same list `netstat -ano` prints), not the game.
 
 | Diagnosis | Meaning / fix |
 | --- | --- |
 | Deadlock is not running | Start the game. If it *is* running, check its `.exe` name in Task Manager → Details and open an issue. |
 | Not listening on any port | The launch option didn't reach the game. Quit Deadlock completely, set *Launch Options* to `-console -netconport 2121`, and start it from Steam. If it still opens no port, your Deadlock build doesn't support `-netconport`. |
-| Listening on a different port | Set **Console port** in the app to the port shown. |
+| Working console on a different port | Set **Console port** in the app to the port shown. |
+| VConsole port found | Deadlock has Source 2's VConsole open. The app doesn't support that protocol yet, so please report it. |
 | Port used by another program | Pick another port (e.g. `2122`) in both the app and the launch options. |
 
 Notes:

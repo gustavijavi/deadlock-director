@@ -74,7 +74,7 @@ def scrolling(widget):
 
 
 class _DiagnoseResult(QObject):
-    ready = Signal(str, list)
+    ready = Signal(str, list, object)
 
 
 class ConnectionPanel(QWidget):
@@ -147,19 +147,19 @@ class ConnectionPanel(QWidget):
 
         def work():
             try:
-                verdict, details = detect.diagnose(host, port)
+                verdict, details, found = detect.diagnose(host, port)
             except Exception as error:
-                verdict, details = 'unknown', ['Diagnosis failed: {}'.format(error)]
-            self.diagnoseResult.ready.emit(verdict, details)
+                verdict, details, found = 'unknown', ['Diagnosis failed: {}'.format(error)], None
+            self.diagnoseResult.ready.emit(verdict, details, found)
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _showDiagnosis(self, verdict, details):
+    def _showDiagnosis(self, verdict, details, found):
         self.diagnoseButton.setEnabled(True)
         self.diagnoseButton.setText('Diagnose connection')
         if verdict == 'ok' and not self.game.isConnected():
             self.game.connectToGame()
-        advice = detect.ADVICE.get(verdict, '').format(port=self.settings.get('connection/port'))
+        advice = detect.ADVICE.get(verdict, '').format(port=self.settings.get('connection/port'), found=found)
         box = QMessageBox(QMessageBox.Information if verdict == 'ok' else QMessageBox.Warning,
                           'Connection diagnosis', advice, QMessageBox.Ok, self)
         box.setInformativeText('\n'.join(details))
