@@ -27,8 +27,16 @@ class _Query(object):
         self.deadline = deadline
 
 
+HANDSHAKE_TIMEOUT = 3000
+
+
 class NetConClient(QObject):
-    """Plain-text console (-netconport): one command per line each way."""
+    """Plain-text console (-netconport): one command per line each way.
+
+    A TCP connection alone proves nothing (any program can listen on a port),
+    so the client only reports itself connected once the other side has
+    proven it is a game console: here by echoing a token back.
+    """
     protocol = 'netcon'
     connectedChanged = Signal(bool)
     lineReceived = Signal(str, bool)  # line, solicited (part of one of our queries)
@@ -49,13 +57,21 @@ class NetConClient(QObject):
         self.expiryTimer = QTimer(self)
         self.expiryTimer.setInterval(50)
         self.expiryTimer.timeout.connect(self._expireQueries)
+        self.verified = False
+        self.handshakeToken = None
+        self.lastError = ''
+        self.handshakeTimer = QTimer(self)
+        self.handshakeTimer.setSingleShot(True)
+        self.handshakeTimer.timeout.connect(self._handshakeFailed)
 
     # -- connection ------------------------------------------------------
     def isConnected(self):
-        return self.socket.state() == QAbstractSocket.ConnectedState
+        return self.verified and self.socket.state() == QAbstractSocket.ConnectedState
 
     def isBusy(self):
-        return self.socket.state() in (QAbstractSocket.HostLookupState, QAbstractSocket.ConnectingState)
+        state = self.socket.state()
+        return state in (QAbstractSocket.HostLookupState, QAbstractSocket.ConnectingState) or (
+            state == QAbstractSocket.ConnectedState and not self.verified)
 
     def connectTo(self, host, port):
         if self.isConnected() or self.isBusy():
@@ -63,19 +79,45 @@ class NetConClient(QObject):
         self.socket.connectToHost(host, int(port))
 
     def close(self):
+        self.handshakeTimer.stop()
         self.socket.abort()
         self._failQueries()
         self.buffer = b''
+        if self.verified:
+            self.verified = False
+            self.connectedChanged.emit(False)
 
     def _onConnected(self):
-        self.connectedChanged.emit(True)
+        self.verified = False
+        self.buffer = b''
+        self.handshakeToken = '{}_HELLO{}'.format(MARKER_PREFIX, next(self.counter))
+        self.socket.write(self.encode('echo ' + self.handshakeToken))
+        self.handshakeTimer.start(HANDSHAKE_TIMEOUT)
+
+    def _verify(self):
+        if not self.verified:
+            self.verified = True
+            self.lastError = ''
+            self.handshakeTimer.stop()
+            self.connectedChanged.emit(True)
+
+    def _handshakeFailed(self):
+        self.lastError = 'Port {} accepted the connection but did not answer like a game console.'.format(
+            self.socket.peerPort())
+        self.errorOccurred.emit(self.lastError)
+        self.socket.abort()
 
     def _onDisconnected(self):
+        self.handshakeTimer.stop()
         self._failQueries()
-        self.connectedChanged.emit(False)
+        if self.verified:
+            self.verified = False
+            self.connectedChanged.emit(False)
 
     def _onError(self, error):
         # Connection refused is the normal "game not running yet" case.
+        if error == QAbstractSocket.ConnectionRefusedError:
+            self.lastError = ''
         if error != QAbstractSocket.RemoteHostClosedError:
             self.errorOccurred.emit(self.socket.errorString())
 
@@ -148,6 +190,9 @@ class NetConClient(QObject):
                 self._handleLine(line)
 
     def _handleLine(self, line):
+        if self.handshakeToken and self.handshakeToken in line:
+            self._verify()
+            return
         solicited = False
         for ident, query in list(self.queries.items()):
             begin = '{}_B{}'.format(MARKER_PREFIX, ident)

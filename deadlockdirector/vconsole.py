@@ -1,7 +1,8 @@
 """Client for Source 2's VConsole protocol (the one Valve's VConsole2 tool uses).
 
-Some Source 2 games only expose their console this way, typically when started
-in `-tools` mode, on TCP port 29000. The stream is a series of chunks:
+Some Source 2 games only expose their console this way, on TCP port 29000,
+when started with `-vconsole` or in `-tools` mode. (Deadlock's `-tools` mode
+fails at startup because the "modtools" module isn't shipped to players.) The stream is a series of chunks:
 
     char[4] type     e.g. AINF, ADON, CHAN, CVAR, CFGV, PRNT (from the game), CMND (to it)
     uint32  version  big-endian protocol version, e.g. 0x00D40000
@@ -50,6 +51,14 @@ def prnt_text(body):
     return text.decode('utf-8', errors='replace')
 
 
+def adon_name(body):
+    """Game / addon name from an ADON chunk, e.g. 'citadel' for Deadlock."""
+    if len(body) < 4:
+        return ''
+    length = struct.unpack_from('>H', body, 2)[0]
+    return body[4:4 + length].split(b'\x00', 1)[0].decode('utf-8', errors='replace')
+
+
 def looks_like_vconsole(data):
     """True if raw bytes start with a plausible VConsole chunk header."""
     if len(data) < HEADER.size:
@@ -65,6 +74,12 @@ class VConsoleClient(NetConClient):
         NetConClient.__init__(self, parent)
         self.version = DEFAULT_VERSION
         self.chunkTypes = set()
+        self.gameName = ''
+
+    def _onConnected(self):
+        self.chunkTypes = set()
+        self.gameName = ''
+        NetConClient._onConnected(self)
 
     def encode(self, command):
         return build_command(command, self.version)
@@ -80,6 +95,11 @@ class VConsoleClient(NetConClient):
             # Answer in whatever protocol version the game speaks.
             self.version = version
             self.chunkTypes.add(kind)
-            if kind == 'PRNT':
+            # Well-formed VConsole chunks are proof enough that this is a
+            # Source 2 console (it greets with AINF/ADON before we speak).
+            self._verify()
+            if kind == 'ADON':
+                self.gameName = adon_name(body)
+            elif kind == 'PRNT':
                 for line in prnt_text(body).splitlines():
                     yield line

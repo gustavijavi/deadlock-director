@@ -29,6 +29,7 @@ class DeadlockGame(QObject):
     consoleLine = Signal(str, bool)       # line, solicited
     commandSent = Signal(str)
     tickReceived = Signal(int)
+    connectionProblem = Signal(str)
 
     def __init__(self, settings, parent=None):
         QObject.__init__(self, parent)
@@ -41,6 +42,7 @@ class DeadlockGame(QObject):
             client.connectedChanged.connect(functools.partial(self._onClientConnected, protocol))
             client.lineReceived.connect(self._onLine)
             client.commandSent.connect(self.commandSent)
+            client.errorOccurred.connect(self.connectionProblem)
         self.client = self.clients['netcon']
         self.camera = None
         self.fov = None
@@ -62,6 +64,15 @@ class DeadlockGame(QObject):
     @property
     def protocol(self):
         return self.client.protocol
+
+    @property
+    def gameName(self):
+        """Name the game reported over VConsole ('citadel' is Deadlock)."""
+        return getattr(self.client, 'gameName', '')
+
+    def connectionErrors(self):
+        """Ports that answered but failed the console handshake."""
+        return [c.lastError for c in self.clients.values() if c.lastError]
 
     def port(self, protocol=None):
         protocol = protocol or self.client.protocol

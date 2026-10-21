@@ -78,7 +78,7 @@ class _DiagnoseResult(QObject):
 
 
 PROTOCOLS = [('auto', 'Automatic (try both)'), ('netcon', 'Network console (-netconport)'),
-             ('vconsole', 'VConsole (-tools mode)')]
+             ('vconsole', 'VConsole (-vconsole)')]
 PROTOCOL_NAMES = {'netcon': 'network console', 'vconsole': 'VConsole'}
 
 
@@ -131,8 +131,8 @@ class ConnectionPanel(QWidget):
         box = QGroupBox('Deadlock launch options')
         boxLayout = QVBoxLayout(box)
         self.launchOptions = QLineEdit(settings.get('connection/launch_options'))
-        self.launchOptions.setToolTip('Used by the buttons below. Try "-console -tools" if the network console '
-                                      'port never opens.')
+        self.launchOptions.setToolTip('Used by the buttons below. Try "-console -vconsole" if the network console '
+                                      'port never opens. (Avoid -tools: Deadlock does not ship the files it needs.)')
         self.launchOptions.editingFinished.connect(
             lambda: settings.set('connection/launch_options', self.launchOptions.text().strip()))
         boxLayout.addWidget(self.launchOptions)
@@ -153,6 +153,7 @@ class ConnectionPanel(QWidget):
         layout.addStretch(1)
 
         game.statusChanged.connect(self.refresh)
+        game.connectionProblem.connect(self.refresh)
         self.refresh()
 
     def _setting(self, key, value):
@@ -217,14 +218,19 @@ class ConnectionPanel(QWidget):
         port, vport = self.settings.get('connection/port'), self.settings.get('connection/vconsole_port')
         waitingFor = {'netcon': 'console port {}'.format(port), 'vconsole': 'VConsole port {}'.format(vport)}.get(
             mode, 'console port {} / VConsole port {}'.format(port, vport))
+        via = '{} (port {})'.format(PROTOCOL_NAMES.get(self.game.protocol, self.game.protocol), self.game.port())
+        if self.game.gameName:
+            via += ', game "{}"'.format(self.game.gameName)
         text, color = {
-            gamemod.STATUS_CONNECTED: ('Connected to Deadlock via {} (port {}). Open a replay to start directing.'.format(
-                PROTOCOL_NAMES.get(self.game.protocol, self.game.protocol), self.game.port()), theme.GOOD),
+            gamemod.STATUS_CONNECTED: ('Connected to the game console via {}. Open a replay to start directing.'.format(via),
+                                       theme.GOOD),
             gamemod.STATUS_WAITING: ('Waiting for Deadlock\'s {}. Stuck here? Click "Diagnose connection".'.format(
                 waitingFor), theme.WARN),
             gamemod.STATUS_NOT_RUNNING: ('Deadlock is not running.', theme.TEXT_DIM),
             gamemod.STATUS_DISCONNECTED: ('Disconnected.', theme.TEXT_DIM),
         }.get(status, ('', theme.TEXT_DIM))
+        if status != gamemod.STATUS_CONNECTED and self.game.connectionErrors():
+            text += '\n\n⚠ ' + ' '.join(self.game.connectionErrors())
         self.status.setText(text)
         self.dot.setStyleSheet('color: {}; font-size: 16px;'.format(color.name()))
         connected = status == gamemod.STATUS_CONNECTED

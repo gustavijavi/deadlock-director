@@ -223,9 +223,9 @@ ADVICE = {
                    'of its .exe so it can be added to the detection list.',
     'not_listening': 'Deadlock is running but has not opened a console port, so it ignored the launch options. '
                      '(Any other ports listed are not a console.)\n\n'
-                     'Try other launch options in the Connection panel, e.g. "-console -tools" (Valve\'s '
-                     'developer mode, which opens a VConsole port), quit Deadlock completely, start it again and '
-                     'run Diagnose again.',
+                     'Try other launch options in the Connection panel, e.g. "-console -vconsole" (asks the '
+                     'engine for a VConsole port), quit Deadlock completely, start it again and run Diagnose '
+                     'again. Avoid -tools: Deadlock fails to start with it.',
     'other_port': 'Found a working network console on port {found}. Deadlock Director switched to it.',
     'vconsole': 'Found a working VConsole on port {found}. Deadlock Director switched to it.',
     'port_taken': 'Another program is already using port {found}. Pick a different port number in the app and '

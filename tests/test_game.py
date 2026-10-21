@@ -138,3 +138,49 @@ def test_auto_mode_finds_vconsole(fake, protocol, tmp_path):
         assert wait_for(lambda: result) and result[0].position == [7.0, 8.0, 9.0]
     finally:
         game.disconnectFromGame()
+
+
+@pytest.mark.parametrize('protocol', ['netcon', 'vconsole'])
+@pytest.mark.parametrize('greeting', [None, b'HTTP/1.1 501 Not Implemented\r\ncontent-type: text/plain\r\n\r\n'])
+def test_non_console_port_is_not_reported_connected(protocol, greeting, tmp_path, monkeypatch, app):
+    """A port that accepts connections but isn't a game console (a silent
+    socket, or Deadlock's internal web server) must not show as connected."""
+    import socket
+    import threading
+    from deadlockdirector import netcon
+    monkeypatch.setattr(netcon, 'HANDSHAKE_TIMEOUT', 400)
+    server = socket.socket()
+    server.bind(('127.0.0.1', 0))
+    server.listen(4)
+    port = server.getsockname()[1]
+    held = []
+
+    def run():
+        while True:
+            try:
+                conn, _ = server.accept()
+            except OSError:
+                return
+            held.append(conn)
+            if greeting:
+                conn.recv(1024)
+                conn.sendall(greeting)
+
+    threading.Thread(target=run, daemon=True).start()
+    key = 'vconsole_port' if protocol == 'vconsole' else 'port'
+    game = DeadlockGame(make_settings(tmp_path, protocol=protocol, **{key: port}))
+    game.detectTimer.stop()
+    game.connectToGame()
+    try:
+        assert wait_for(lambda: game.connectionErrors(), 3.0)
+        assert game.status != STATUS_CONNECTED and not game.isConnected()
+    finally:
+        game.disconnectFromGame()
+        server.close()
+        for conn in held:
+            conn.close()
+
+
+@pytest.mark.parametrize('protocol', ['vconsole'])
+def test_vconsole_reports_game_name(game):
+    assert wait_for(lambda: game.gameName == 'citadel')

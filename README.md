@@ -17,13 +17,14 @@ already provides for this: **its own developer console**.
 Source 2 games can open that console to local programs in two ways, and Deadlock Director speaks both:
 
 * the **network console**, a plain-text port opened with the `-netconport <port>` launch option, and
-* **VConsole**, the protocol Valve's own VConsole2 tool uses (port 29000), opened in `-tools` developer mode.
+* **VConsole**, the protocol Valve's own VConsole2 tool uses (port 29000), requested with `-vconsole`.
 
 By default the app tries both and uses whichever answers. Either way it types the same console commands you could
 type by hand (`spec_goto`, `spec_pos`, `demo_pause`, `demo_timescale`, …).
 
-> **Status:** in testing so far, Deadlock ignored `-netconport`, so the VConsole route (`-console -tools`) is
-> the one being tried next.
+> **Status:** in testing so far, Deadlock ignored `-netconport`, and `-tools` mode crashed at startup
+> ("Unable to load module modtools"), because Valve doesn't ship its developer tools to players. `-vconsole` is
+> being tested next.
 
 What it **does not** do:
 
@@ -75,7 +76,7 @@ a harmless `echo` line to ports that stay silent. The port list comes from Windo
 | Diagnosis | Meaning / fix |
 | --- | --- |
 | Deadlock is not running | Start the game. If it *is* running, check its `.exe` name in Task Manager → Details and open an issue. |
-| No console port open | Deadlock ignored the launch options. Try `-console -tools` in the **Deadlock launch options** box, quit Deadlock completely, start it again and re-run Diagnose. |
+| No console port open | Deadlock ignored the launch options. Try `-console -vconsole` in the **Deadlock launch options** box, quit Deadlock completely, start it again and re-run Diagnose. |
 | Console / VConsole on a different port | Found automatically, and the app switches to it. |
 | Port used by another program | Pick another port number in both the app and the launch options. |
 
@@ -83,7 +84,7 @@ Notes:
 * Launch options only apply when the game *starts*. If Deadlock was already open, restart it.
 * The **Launch Deadlock with these options** button makes Steam show a confirmation prompt, and the options are ignored if you dismiss it.
 * There's no way to open a console port after the game has started. It has to be a launch option.
-* `-tools` is Valve's developer mode. In other Source 2 games it turns off online matchmaking for that session, so use it only for replay work and launch normally to play.
+* Don't use `-tools`: Deadlock doesn't ship the developer files it needs and fails with "Unable to load module modtools".
 
 ## Features
 
@@ -127,7 +128,7 @@ below come from community observer guides and the Source 2 engine. Every one of 
 | What | Default | Status |
 | --- | --- | --- |
 | Console port | `-netconport 2121` | **Ignored by Deadlock in testing** (the port never opened). Kept in case Valve enables it. |
-| VConsole | `-tools`, port 29000 | How Valve's VConsole2 tool connects to CS2. **Not yet confirmed for Deadlock.** |
+| VConsole | `-vconsole`, port 29000 | How Valve's VConsole2 tool connects to Source 2 games. `-tools` crashes Deadlock; `-vconsole` is **not yet confirmed**. |
 | Move camera | `spec_goto x y z pitch yaw` | Community guides confirm `spec_goto` moves the spectator camera. Some report that **it ignores pitch/yaw** and only moves the position. If rotation doesn't follow, try the presets in Settings. The `setang` variants need `sv_cheats 1` in the replay. |
 | Read camera | `spec_pos` | Confirmed: prints X Y Z pitch yaw. The parser accepts any line with 5–6 numbers. |
 | Pause / resume / seek / speed | `demo_pause`, `demo_resume`, `demo_gototick`, `demo_timescale` | Standard Source 2 demo commands. Not verified against Deadlock's replay viewer. |
