@@ -50,23 +50,50 @@ def listener():
 
 def test_diagnose_ok(fake):
     _, port = fake
-    verdict, details, found = detect.diagnose('127.0.0.1', port, names=ME)
+    verdict, details, found = detect.diagnose('127.0.0.1', port, free_port(), names=ME)
+    assert verdict == 'ok', details
+    assert found == port
+
+
+def test_diagnose_ok_vconsole(fake_vconsole):
+    _, port = fake_vconsole
+    verdict, details, found = detect.diagnose('127.0.0.1', free_port(), port, names=ME)
     assert verdict == 'ok', details
     assert found == port
 
 
 def test_diagnose_not_running():
-    verdict, _, found = detect.diagnose('127.0.0.1', free_port(), names=('surely-not-running.exe',))
+    verdict, _, found = detect.diagnose('127.0.0.1', free_port(), free_port(), names=('surely-not-running.exe',))
     assert verdict == 'not_running' and found is None
 
 
 def test_diagnose_finds_console_on_other_port(fake):
     # The "game" (this process) runs a real console on the fake port, while
-    # the app is configured for a different, closed port.
+    # the app is configured for different, closed ports.
     _, port = fake
-    verdict, details, found = detect.diagnose('127.0.0.1', free_port(), names=ME)
+    verdict, details, found = detect.diagnose('127.0.0.1', free_port(), free_port(), names=ME)
     assert verdict == 'other_port', details
     assert found == port
+
+
+def test_diagnose_finds_vconsole_on_other_port(fake_vconsole):
+    _, port = fake_vconsole
+    verdict, details, found = detect.diagnose('127.0.0.1', free_port(), free_port(), names=ME)
+    assert verdict == 'vconsole', details
+    assert found == port
+
+
+def test_diagnose_web_server_is_not_a_console(listener):
+    # What Deadlock's internal web server answered in a real diagnosis.
+    listener(b'HTTP/1.1 501 Not Implemented\r\ncontent-type: text/plain\r\n\r\n')
+    verdict, details, _ = detect.diagnose('127.0.0.1', free_port(), free_port(), names=ME)
+    assert verdict == 'not_listening', details
+    assert any('web server' in line for line in details)
+
+
+def test_probe_identifies_http(listener):
+    port = listener(b'HTTP/1.1 501 Not Implemented\r\n\r\n')
+    assert detect.probe_port('127.0.0.1', port, listen=0.5)[0] == 'http'
 
 
 def test_probe_identifies_vconsole(listener):

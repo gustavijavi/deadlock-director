@@ -77,6 +77,11 @@ class _DiagnoseResult(QObject):
     ready = Signal(str, list, object)
 
 
+PROTOCOLS = [('auto', 'Automatic (try both)'), ('netcon', 'Network console (-netconport)'),
+             ('vconsole', 'VConsole (-tools mode)')]
+PROTOCOL_NAMES = {'netcon': 'network console', 'vconsole': 'VConsole'}
+
+
 class ConnectionPanel(QWidget):
 
     def __init__(self, game, settings, parent=None):
@@ -95,12 +100,23 @@ class ConnectionPanel(QWidget):
         layout.addLayout(statusRow)
 
         form = QFormLayout()
+        self.protocol = QComboBox()
+        for name, text in PROTOCOLS:
+            self.protocol.addItem(text, name)
+        names = [name for name, _ in PROTOCOLS]
+        mode = settings.get('connection/protocol')
+        self.protocol.setCurrentIndex(names.index(mode) if mode in names else 0)
+        self.protocol.currentIndexChanged.connect(self._protocolChanged)
+        form.addRow('Connect via', self.protocol)
         self.host = QLineEdit(settings.get('connection/host'))
         self.host.editingFinished.connect(lambda: settings.set('connection/host', self.host.text().strip() or '127.0.0.1'))
-        self.port = spin(1, 65535, settings.get('connection/port'), decimals=0)
-        self.port.valueChanged.connect(self._portChanged)
         form.addRow('Host', self.host)
+        self.port = spin(1, 65535, settings.get('connection/port'), decimals=0)
+        self.port.valueChanged.connect(lambda v: self._setting('connection/port', v))
         form.addRow('Console port', self.port)
+        self.vport = spin(1, 65535, settings.get('connection/vconsole_port'), decimals=0)
+        self.vport.valueChanged.connect(lambda v: self._setting('connection/vconsole_port', v))
+        form.addRow('VConsole port', self.vport)
         layout.addLayout(form)
 
         self.auto = QCheckBox('Connect automatically')
@@ -111,12 +127,23 @@ class ConnectionPanel(QWidget):
         self.connectButton = button('Connect', self.game.connectToGame)
         self.disconnectButton = button('Disconnect', self.game.disconnectFromGame)
         layout.addLayout(row(self.connectButton, self.disconnectButton))
-        layout.addWidget(button('Launch Deadlock with console port', self._launch, accent=True,
-                                tip='Asks Steam to start Deadlock with "-console -netconport <port>" for this launch only.'))
-        layout.addWidget(button('Copy launch options', self._copy,
-                                tip='To set them permanently: Steam > Deadlock > Properties > Launch Options'))
+
+        box = QGroupBox('Deadlock launch options')
+        boxLayout = QVBoxLayout(box)
+        self.launchOptions = QLineEdit(settings.get('connection/launch_options'))
+        self.launchOptions.setToolTip('Used by the buttons below. Try "-console -tools" if the network console '
+                                      'port never opens.')
+        self.launchOptions.editingFinished.connect(
+            lambda: settings.set('connection/launch_options', self.launchOptions.text().strip()))
+        boxLayout.addWidget(self.launchOptions)
+        boxLayout.addWidget(button('Launch Deadlock with these options', self._launch, accent=True,
+                                   tip='Asks Steam to start Deadlock with these options for this launch only.'))
+        boxLayout.addWidget(button('Copy launch options', self._copy,
+                                   tip='To set them permanently: Steam > Deadlock > Properties > Launch Options'))
+        layout.addWidget(box)
+
         self.diagnoseButton = button('Diagnose connection', self._diagnose,
-                                     tip='Checks whether Deadlock is running and which ports it has opened')
+                                     tip='Checks whether Deadlock is running and what each of its open ports is')
         layout.addWidget(self.diagnoseButton)
         self.options = label('', 'hint', wrap=True)
         layout.addWidget(self.options)
@@ -128,26 +155,37 @@ class ConnectionPanel(QWidget):
         game.statusChanged.connect(self.refresh)
         self.refresh()
 
-    def _portChanged(self, value):
-        self.settings.set('connection/port', value)
+    def _setting(self, key, value):
+        self.settings.set(key, value)
         self.refresh()
 
+    def _protocolChanged(self, index):
+        self.settings.set('connection/protocol', self.protocol.itemData(index))
+        self.refresh()
+
+    def _launchArgs(self):
+        args = self.launchOptions.text().strip()
+        self.settings.set('connection/launch_options', args)
+        return args
+
     def _launch(self):
-        if not detect.launch_deadlock(self.port.value()):
+        if not detect.launch_deadlock(self._launchArgs()):
             self.options.setText('Could not open Steam. Add the launch options manually.')
 
     def _copy(self):
-        QGuiApplication.clipboard().setText(detect.launch_options(self.port.value()))
+        QGuiApplication.clipboard().setText(self._launchArgs())
         self.options.setText('Copied! Paste into Steam > Deadlock > Properties > Launch Options.')
 
     def _diagnose(self):
         self.diagnoseButton.setEnabled(False)
         self.diagnoseButton.setText('Diagnosing…')
-        host, port = self.settings.get('connection/host'), self.settings.get('connection/port')
+        host = self.settings.get('connection/host')
+        port, vport = self.settings.get('connection/port'), self.settings.get('connection/vconsole_port')
+        skip = {self.game.port()} if self.game.isConnected() else set()
 
         def work():
             try:
-                verdict, details, found = detect.diagnose(host, port)
+                verdict, details, found = detect.diagnose(host, port, vport, skip=skip)
             except Exception as error:
                 verdict, details, found = 'unknown', ['Diagnosis failed: {}'.format(error)], None
             self.diagnoseResult.ready.emit(verdict, details, found)
@@ -157,10 +195,17 @@ class ConnectionPanel(QWidget):
     def _showDiagnosis(self, verdict, details, found):
         self.diagnoseButton.setEnabled(True)
         self.diagnoseButton.setText('Diagnose connection')
-        if verdict == 'ok' and not self.game.isConnected():
+        # Point the app at a console the diagnosis discovered elsewhere.
+        if verdict == 'other_port':
+            self.port.setValue(found)
+        elif verdict == 'vconsole':
+            self.vport.setValue(found)
+        if verdict in ('other_port', 'vconsole') and self.settings.get('connection/protocol') != 'auto':
+            self.protocol.setCurrentIndex(0)
+        if verdict in ('ok', 'other_port', 'vconsole') and not self.game.isConnected():
             self.game.connectToGame()
         advice = detect.ADVICE.get(verdict, '').format(port=self.settings.get('connection/port'), found=found)
-        box = QMessageBox(QMessageBox.Information if verdict == 'ok' else QMessageBox.Warning,
+        box = QMessageBox(QMessageBox.Information if verdict in ('ok', 'other_port', 'vconsole') else QMessageBox.Warning,
                           'Connection diagnosis', advice, QMessageBox.Ok, self)
         box.setInformativeText('\n'.join(details))
         box.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -168,11 +213,15 @@ class ConnectionPanel(QWidget):
 
     def refresh(self, *args):
         status = self.game.status
-        port = self.settings.get('connection/port')
+        mode = self.settings.get('connection/protocol')
+        port, vport = self.settings.get('connection/port'), self.settings.get('connection/vconsole_port')
+        waitingFor = {'netcon': 'console port {}'.format(port), 'vconsole': 'VConsole port {}'.format(vport)}.get(
+            mode, 'console port {} / VConsole port {}'.format(port, vport))
         text, color = {
-            gamemod.STATUS_CONNECTED: ('Connected to the Deadlock console. Open a replay to start directing.', theme.GOOD),
-            gamemod.STATUS_WAITING: ('Waiting for Deadlock\'s console port {}. It needs "-netconport {}" in its '
-                                     'launch options. Stuck here? Click "Diagnose connection".'.format(port, port), theme.WARN),
+            gamemod.STATUS_CONNECTED: ('Connected to Deadlock via {} (port {}). Open a replay to start directing.'.format(
+                PROTOCOL_NAMES.get(self.game.protocol, self.game.protocol), self.game.port()), theme.GOOD),
+            gamemod.STATUS_WAITING: ('Waiting for Deadlock\'s {}. Stuck here? Click "Diagnose connection".'.format(
+                waitingFor), theme.WARN),
             gamemod.STATUS_NOT_RUNNING: ('Deadlock is not running.', theme.TEXT_DIM),
             gamemod.STATUS_DISCONNECTED: ('Disconnected.', theme.TEXT_DIM),
         }.get(status, ('', theme.TEXT_DIM))
@@ -181,8 +230,8 @@ class ConnectionPanel(QWidget):
         connected = status == gamemod.STATUS_CONNECTED
         self.connectButton.setEnabled(not connected)
         self.disconnectButton.setEnabled(connected)
-        if not self.options.text().startswith(('Copied', 'Could')):
-            self.options.setText('Launch options: ' + detect.launch_options(port))
+        self.port.setEnabled(mode != 'vconsole')
+        self.vport.setEnabled(mode != 'netcon')
 
 
 class CameraPanel(QWidget):

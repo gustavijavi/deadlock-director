@@ -80,7 +80,10 @@ def _printable(data, limit=48):
 
 
 def _classify(data):
-    if len(data) >= 12 and data[:4].isalpha() and data[:4].isupper():
+    from deadlockdirector.vconsole import looks_like_vconsole
+    if data.startswith(b'HTTP/'):
+        return 'http'
+    if looks_like_vconsole(data):
         return 'vconsole'
     printable = sum(1 for b in data if 32 <= b < 127 or b in (9, 10, 13))
     return 'text' if printable >= len(data) * 0.9 else 'binary'
@@ -90,12 +93,12 @@ def probe_port(host, port, listen=1.5, timeout=1.0):
     """Identify what kind of service a local port is.
 
     Connects and first only listens: a Source 2 VConsole server announces
-    itself with 4-letter binary packets (AINF, ADON, CHAN…). If the port stays
-    silent, one harmless `echo` line is sent to see if it is a plain-text
-    network console (-netconport).
+    itself straight away with binary chunks (AINF, ADON, CHAN…). If the port
+    stays silent, one harmless `echo` line is sent to see whether it is a
+    plain-text network console (-netconport).
 
-    Returns (kind, sample): kind is 'netcon', 'vconsole', 'text', 'binary',
-    'silent' or 'closed'.
+    Returns (kind, sample): kind is 'netcon', 'vconsole', 'http', 'text',
+    'binary', 'silent' or 'closed'.
     """
     try:
         sock = socket.create_connection((host, int(port)), timeout=timeout)
@@ -135,96 +138,98 @@ def probe_port(host, port, listen=1.5, timeout=1.0):
 
 
 PORT_KINDS = {
-    'netcon': 'plain-text network console (usable)',
-    'vconsole': 'Source 2 VConsole',
+    'netcon': 'network console (usable)',
+    'vconsole': 'Source 2 VConsole (usable)',
+    'http': 'web server (not a console)',
     'text': 'unknown text service',
     'binary': 'unknown binary service',
     'silent': 'no response (probably internal to the game)',
     'closed': 'refused the connection',
+    'busy': 'in use by Deadlock Director right now',
 }
 
 
-def diagnose(host, port, names=DEADLOCK_PROCESS_NAMES, probe=True):
+def diagnose(host, port, vport=29000, names=DEADLOCK_PROCESS_NAMES, skip=(), probe=True):
     """Work out why the console connection does or doesn't work.
 
-    Returns (verdict, details, found) where verdict is one of 'ok',
-    'not_running', 'not_listening', 'other_port', 'vconsole', 'port_taken',
-    'unknown' and found is the port the verdict refers to (or None).
+    port / vport are the configured network-console and VConsole ports; ports
+    in `skip` are already connected and are not probed again.
+
+    Returns (verdict, details, found): verdict is one of 'ok', 'other_port',
+    'vconsole', 'port_taken', 'not_running', 'not_listening', 'unknown';
+    found is the port it refers to (or None).
     """
-    port = int(port)
+    port, vport = int(port), int(vport)
     details = []
     processes = find_processes(names)
-    reachable = port_open(host, port)
     allPorts = listening_ports()
+    pids = {p for p, _ in processes or []}
     if processes is None:
         details.append('Could not read the process list.')
     elif processes:
         details.append('Deadlock process: ' + ', '.join('{} (pid {})'.format(n, p) for p, n in processes))
     else:
         details.append('No process named {} is running.'.format(' / '.join(n for n in names if '.' in n)))
-    details.append('Port {} on {}: {}'.format(port, host, 'accepting connections' if reachable else 'closed'))
 
-    gamePorts = {}
+    candidates = {}
     if allPorts is None:
         details.append('Could not read the TCP connection table.')
-    elif processes:
-        pids = {p for p, _ in processes}
-        gamePorts = {k: v for k, v in allPorts.items() if v[0] in pids and k != port}
-        if not gamePorts:
-            details.append('Deadlock has no other TCP ports open.')
+    else:
+        candidates = {k: v[1] for k, v in allPorts.items() if v[0] in pids}
+    for configured in (port, vport):
+        if configured not in candidates and port_open(host, configured):
+            candidates[configured] = host
+    if processes and allPorts is not None and not candidates:
+        details.append('Deadlock has no TCP ports open (console port {} and VConsole port {} are closed).'.format(port, vport))
 
     kinds = {}
-    for other, (_, address) in sorted(gamePorts.items())[:6]:
-        if probe:
+    for number, address in sorted(candidates.items())[:8]:
+        if number in skip:
+            kind, sample = 'busy', ''
+        elif probe:
             target = '127.0.0.1' if address in ('0.0.0.0', '::', '') else address
-            kind, sample = probe_port(target, other)
+            kind, sample = probe_port(target, number)
         else:
             kind, sample = 'silent', ''
-        kinds[other] = kind
-        line = 'Deadlock port {} ({}): {}'.format(other, address, PORT_KINDS.get(kind, kind))
+        kinds[number] = kind
+        owner = allPorts.get(number) if allPorts else None
+        foreign = owner is not None and pids and owner[0] not in pids
+        line = 'Port {}{}: {}'.format(number, ' (another program)' if foreign else '', PORT_KINDS.get(kind, kind))
         if sample:
             line += '\n    first bytes: ' + sample
         details.append(line)
+        if foreign and number in (port, vport):
+            kinds[number] = 'foreign'
 
-    if reachable:
-        owner = allPorts.get(port) if allPorts else None
-        if processes and owner and owner[0] not in {p for p, _ in processes}:
-            ownerName = 'pid {}'.format(owner[0])
-            try:
-                ownerName = psutil.Process(owner[0]).name()
-            except Exception:
-                pass
-            details.append('Port {} belongs to another program ({}).'.format(port, ownerName))
-            return 'port_taken', details, port
-        return 'ok', details, port
+    for number in (port, vport):
+        if kinds.get(number) in ('netcon', 'vconsole', 'busy'):
+            return 'ok', details, number
+    for kind, verdict in (('netcon', 'other_port'), ('vconsole', 'vconsole')):
+        for number, found in sorted(kinds.items()):
+            if found == kind:
+                return verdict, details, number
+    if 'foreign' in kinds.values():
+        return 'port_taken', details, next(n for n, k in kinds.items() if k == 'foreign')
     if processes == []:
         return 'not_running', details, None
-    for kind, verdict in (('netcon', 'other_port'), ('vconsole', 'vconsole')):
-        for other, found in kinds.items():
-            if found == kind:
-                return verdict, details, other
     if processes:
         return 'not_listening', details, None
     return 'unknown', details, None
 
 
 ADVICE = {
-    'ok': 'The console port is open. Click Connect (or wait a moment for auto-connect).',
+    'ok': 'A console port is open. Deadlock Director will connect (or is already connected).',
     'not_running': 'Start Deadlock first. If it IS running, open Task Manager > Details and tell us the name '
                    'of its .exe so it can be added to the detection list.',
-    'not_listening': 'Deadlock is running but has not opened console port {port}, so the launch option did not '
-                     'reach it or this Deadlock version ignores it. (Any other ports listed are not a console.)\n\n'
-                     '1. Quit Deadlock completely (check the system tray / Task Manager).\n'
-                     '2. Steam > Library > right-click Deadlock > Properties > General > Launch Options: '
-                     '-console -netconport {port}\n'
-                     '3. Start Deadlock from Steam, wait for the main menu and run Diagnose again.\n\n'
-                     'If it still shows port {port} closed, this Deadlock build does not support -netconport.',
-    'other_port': 'Deadlock has a working console on port {found} instead of {port}. Set "Console port" to {found} '
-                  'and connect.',
-    'vconsole': 'Deadlock has a Source 2 VConsole port open on {found}, but no console on {port}. Deadlock Director '
-                'does not speak the VConsole protocol yet. Please send this message to the developer.',
-    'port_taken': 'Another program is already using port {port}. Pick a different number (e.g. 2122) in BOTH the '
-                  'app and the launch options, then restart Deadlock.',
+    'not_listening': 'Deadlock is running but has not opened a console port, so it ignored the launch options. '
+                     '(Any other ports listed are not a console.)\n\n'
+                     'Try other launch options in the Connection panel, e.g. "-console -tools" (Valve\'s '
+                     'developer mode, which opens a VConsole port), quit Deadlock completely, start it again and '
+                     'run Diagnose again.',
+    'other_port': 'Found a working network console on port {found}. Deadlock Director switched to it.',
+    'vconsole': 'Found a working VConsole on port {found}. Deadlock Director switched to it.',
+    'port_taken': 'Another program is already using port {found}. Pick a different port number in the app and '
+                  'in the launch options, then restart Deadlock.',
     'unknown': 'Could not determine the cause automatically.',
 }
 
@@ -287,15 +292,10 @@ def find_install():
     return None
 
 
-def launch_options(port):
-    return '-console -netconport {}'.format(int(port))
-
-
-def launch_deadlock(port):
-    """Ask Steam to start Deadlock with the console port open for this launch
+def launch_deadlock(args):
+    """Ask Steam to start Deadlock with these launch options for this launch
     only. Steam shows its own confirmation dialog for launch arguments."""
     from PySide6.QtCore import QUrl
     from PySide6.QtGui import QDesktopServices
-    args = launch_options(port)
     url = QUrl('steam://run/{}//{}/'.format(DEADLOCK_APP_ID, args))
     return QDesktopServices.openUrl(url)

@@ -28,6 +28,8 @@ class _Query(object):
 
 
 class NetConClient(QObject):
+    """Plain-text console (-netconport): one command per line each way."""
+    protocol = 'netcon'
     connectedChanged = Signal(bool)
     lineReceived = Signal(str, bool)  # line, solicited (part of one of our queries)
     errorOccurred = Signal(str)
@@ -63,8 +65,7 @@ class NetConClient(QObject):
     def close(self):
         self.socket.abort()
         self._failQueries()
-        if self.buffer:
-            self.buffer = b''
+        self.buffer = b''
 
     def _onConnected(self):
         self.connectedChanged.emit(True)
@@ -83,7 +84,7 @@ class NetConClient(QObject):
         command = sanitize(command)
         if not command or not self.isConnected():
             return False
-        self.socket.write((command + '\n').encode('utf-8'))
+        self.socket.write(self.encode(command))
         if self.echoCommands:
             self.commandSent.emit(command)
         return True
@@ -128,12 +129,21 @@ class NetConClient(QObject):
         for ident in list(self.queries):
             self._finish(ident)
 
+    # -- wire format (overridden by VConsoleClient) -----------------------
+    def encode(self, command):
+        return (command + '\n').encode('utf-8')
+
+    def decode(self):
+        """Consume complete messages from self.buffer, yielding text lines."""
+        while b'\n' in self.buffer:
+            raw, self.buffer = self.buffer.split(b'\n', 1)
+            yield raw.decode('utf-8', errors='replace')
+
     # -- receiving -------------------------------------------------------
     def _onReadyRead(self):
         self.buffer += bytes(self.socket.readAll().data())
-        while b'\n' in self.buffer:
-            raw, self.buffer = self.buffer.split(b'\n', 1)
-            line = clean_line(raw.decode('utf-8', errors='replace'))
+        for raw in self.decode():
+            line = clean_line(raw)
             if line:
                 self._handleLine(line)
 

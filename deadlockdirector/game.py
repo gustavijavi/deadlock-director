@@ -4,6 +4,7 @@ Everything the app does to the game goes through `DeadlockGame`, which turns
 intentions ("put the camera here", "pause the replay") into the console
 commands configured in Settings and sends them over the network console.
 """
+import functools
 import re
 
 from PySide6.QtCore import QObject, QTimer, Signal
@@ -11,6 +12,7 @@ from PySide6.QtCore import QObject, QTimer, Signal
 from deadlockdirector import console, detect
 from deadlockdirector.console import CameraState
 from deadlockdirector.netcon import NetConClient
+from deadlockdirector.vconsole import VConsoleClient
 
 STATUS_NOT_RUNNING = 'not_running'
 STATUS_WAITING = 'waiting'
@@ -31,10 +33,15 @@ class DeadlockGame(QObject):
     def __init__(self, settings, parent=None):
         QObject.__init__(self, parent)
         self.settings = settings
-        self.client = NetConClient(self)
-        self.client.connectedChanged.connect(self._onConnectedChanged)
-        self.client.lineReceived.connect(self._onLine)
-        self.client.commandSent.connect(self.commandSent)
+        # Two ways into the same console: the plain-text network console
+        # (-netconport) and Source 2's VConsole protocol. Whichever connects
+        # first becomes the active client.
+        self.clients = {'netcon': NetConClient(self), 'vconsole': VConsoleClient(self)}
+        for protocol, client in self.clients.items():
+            client.connectedChanged.connect(functools.partial(self._onClientConnected, protocol))
+            client.lineReceived.connect(self._onLine)
+            client.commandSent.connect(self.commandSent)
+        self.client = self.clients['netcon']
         self.camera = None
         self.fov = None
         self.timescale = None
@@ -52,13 +59,33 @@ class DeadlockGame(QObject):
     def isConnected(self):
         return self.client.isConnected()
 
+    @property
+    def protocol(self):
+        return self.client.protocol
+
+    def port(self, protocol=None):
+        protocol = protocol or self.client.protocol
+        return self.settings.get('connection/vconsole_port' if protocol == 'vconsole' else 'connection/port')
+
+    def _protocols(self):
+        mode = self.settings.get('connection/protocol')
+        return [mode] if mode in self.clients else ['netcon', 'vconsole']
+
     def connectToGame(self):
         self.manualDisconnect = False
-        self.client.connectTo(self.settings.get('connection/host'), self.settings.get('connection/port'))
+        self._attempt()
+
+    def _attempt(self):
+        if self.isConnected():
+            return
+        host = self.settings.get('connection/host')
+        for protocol in self._protocols():
+            self.clients[protocol].connectTo(host, self.port(protocol))
 
     def disconnectFromGame(self):
         self.manualDisconnect = True
-        self.client.close()
+        for client in self.clients.values():
+            client.close()
         self._setStatus(STATUS_DISCONNECTED)
 
     def poll(self):
@@ -74,14 +101,23 @@ class DeadlockGame(QObject):
         # Try even when no Deadlock process was spotted: the detection is
         # only a hint, and a failed localhost connect costs nothing.
         if not self.manualDisconnect and self.settings.get('connection/autoconnect'):
-            self.client.connectTo(self.settings.get('connection/host'), self.settings.get('connection/port'))
+            self._attempt()
 
-    def _onConnectedChanged(self, connected):
-        self.lastSent.clear()
+    def _onClientConnected(self, protocol, connected):
+        client = self.clients[protocol]
         if connected:
+            if self.client is not client and self.client.isConnected():
+                client.close()  # already talking to the game the other way
+                return
+            self.client = client
+            for other in self.clients.values():
+                if other is not client:
+                    other.close()
+            self.lastSent.clear()
             self._setStatus(STATUS_CONNECTED)
             QTimer.singleShot(200, self, self.queryCamera)
-        else:
+        elif client is self.client:
+            self.lastSent.clear()
             self.poll()
 
     def _setStatus(self, status):

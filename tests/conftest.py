@@ -24,15 +24,31 @@ def app():
     return instance
 
 
-@pytest.fixture
-def fake(app):
+def free_port():
     sock = socket.socket()
     sock.bind(('127.0.0.1', 0))
     port = sock.getsockname()[1]
     sock.close()
-    server = make_server(port, FakeGame())
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    yield server, port
-    server.shutdown()
-    server.server_close()
+    return port
+
+
+def start_fake(protocol):
+    """Run a fake Deadlock console; yields (server, port)."""
+    port = free_port()
+    server = make_server(port, FakeGame(), protocol=protocol)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        yield server, port
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.fixture
+def fake(app):
+    yield from start_fake('netcon')
+
+
+@pytest.fixture
+def fake_vconsole(app):
+    yield from start_fake('vconsole')

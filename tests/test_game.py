@@ -9,6 +9,8 @@ from deadlockdirector.playback import SequencePlayer
 from deadlockdirector.sequence import Sequence
 from deadlockdirector.settings import Settings
 
+from conftest import free_port, start_fake
+
 
 def wait_for(condition, timeout=3.0):
     end = time.monotonic() + timeout
@@ -20,12 +22,30 @@ def wait_for(condition, timeout=3.0):
     return condition()
 
 
+@pytest.fixture(params=['netcon', 'vconsole'])
+def protocol(request):
+    return request.param
+
+
 @pytest.fixture
-def game(fake, tmp_path):
-    server, port = fake
+def fake(app, protocol):
+    """Every test in this module runs against both console protocols."""
+    yield from start_fake(protocol)
+
+
+def make_settings(tmp_path, **values):
     settings = Settings(QSettings(str(tmp_path / 'settings.ini'), QSettings.IniFormat))
-    settings.set('connection/port', port)
     settings.set('connection/autoconnect', False)
+    for key, value in values.items():
+        settings.set('connection/' + key, value)
+    return settings
+
+
+@pytest.fixture
+def game(fake, protocol, tmp_path):
+    server, port = fake
+    key = 'vconsole_port' if protocol == 'vconsole' else 'port'
+    settings = make_settings(tmp_path, protocol=protocol, **{key: port})
     game = DeadlockGame(settings)
     game.detectTimer.stop()
     game.connectToGame()
@@ -99,3 +119,22 @@ def test_synced_playback(game, fake):
     assert history[-1] == 'demo_pause' or 'demo_pause' in history[-3:]
     moves = [h for h in history if h.startswith('spec_goto')]
     assert len(moves) > 10  # streamed, not just the two keyframes
+
+
+@pytest.mark.parametrize('protocol', ['vconsole'])
+def test_auto_mode_finds_vconsole(fake, protocol, tmp_path):
+    """With the network console closed, automatic mode lands on VConsole."""
+    server, port = fake
+    settings = make_settings(tmp_path, protocol='auto', port=free_port(), vconsole_port=port)
+    game = DeadlockGame(settings)
+    game.detectTimer.stop()
+    game.connectToGame()
+    try:
+        assert wait_for(lambda: game.status == STATUS_CONNECTED)
+        assert game.protocol == 'vconsole' and game.port() == port
+        server.game.camera = [7.0, 8.0, 9.0, 1.0, 2.0]
+        result = []
+        game.queryCamera(result.append)
+        assert wait_for(lambda: result) and result[0].position == [7.0, 8.0, 9.0]
+    finally:
+        game.disconnectFromGame()

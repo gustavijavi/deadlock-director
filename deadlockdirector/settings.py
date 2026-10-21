@@ -13,6 +13,9 @@ DEADLOCK_PROCESS_NAMES = ('deadlock.exe', 'project8.exe', 'deadlock')
 DEFAULTS = {
     'connection/host': '127.0.0.1',
     'connection/port': 2121,
+    'connection/vconsole_port': 29000,
+    'connection/protocol': 'auto',  # auto | netcon | vconsole
+    'connection/launch_options': '-console -netconport 2121',
     'connection/autoconnect': True,
 
     'commands/camera': 'spec_goto {x:.2f} {y:.2f} {z:.2f} {pitch:.2f} {yaw:.2f}',

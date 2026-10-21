@@ -14,9 +14,16 @@ over time. It can also seek the replay to the same tick for every take and recor
 League has an official Replay API. Deadlock doesn't, so Deadlock Director uses the one interface the game
 already provides for this: **its own developer console**.
 
-Source 2 games can open that console on a local TCP port when started with the `-netconport <port>` launch
-option. Deadlock Director connects to that port and types the same console commands you could type by hand
-(`spec_goto`, `spec_pos`, `demo_pause`, `demo_timescale`, …).
+Source 2 games can open that console to local programs in two ways, and Deadlock Director speaks both:
+
+* the **network console**, a plain-text port opened with the `-netconport <port>` launch option, and
+* **VConsole**, the protocol Valve's own VConsole2 tool uses (port 29000), opened in `-tools` developer mode.
+
+By default the app tries both and uses whichever answers. Either way it types the same console commands you could
+type by hand (`spec_goto`, `spec_pos`, `demo_pause`, `demo_timescale`, …).
+
+> **Status:** in testing so far, Deadlock ignored `-netconport`, so the VConsole route (`-console -tools`) is
+> the one being tried next.
 
 What it **does not** do:
 
@@ -61,20 +68,22 @@ PyInstaller and refreshes the `latest` release.
 ## Troubleshooting the connection
 
 Click **Diagnose connection** in the Connection panel. It checks whether Deadlock is running, which TCP ports it
-has opened, and what each one is (it listens first, and only sends a harmless `echo` line to ports that stay silent). It reads Windows' connection table (the same list `netstat -ano` prints), not the game.
+has opened, and what each one is: network console, VConsole, web server or unknown. It listens first and only sends
+a harmless `echo` line to ports that stay silent. The port list comes from Windows' connection table (the same list
+`netstat -ano` prints), not from the game. When it finds a working console on another port, it switches the app to it.
 
 | Diagnosis | Meaning / fix |
 | --- | --- |
 | Deadlock is not running | Start the game. If it *is* running, check its `.exe` name in Task Manager → Details and open an issue. |
-| Not listening on any port | The launch option didn't reach the game. Quit Deadlock completely, set *Launch Options* to `-console -netconport 2121`, and start it from Steam. If it still opens no port, your Deadlock build doesn't support `-netconport`. |
-| Working console on a different port | Set **Console port** in the app to the port shown. |
-| VConsole port found | Deadlock has Source 2's VConsole open. The app doesn't support that protocol yet, so please report it. |
-| Port used by another program | Pick another port (e.g. `2122`) in both the app and the launch options. |
+| No console port open | Deadlock ignored the launch options. Try `-console -tools` in the **Deadlock launch options** box, quit Deadlock completely, start it again and re-run Diagnose. |
+| Console / VConsole on a different port | Found automatically, and the app switches to it. |
+| Port used by another program | Pick another port number in both the app and the launch options. |
 
 Notes:
 * Launch options only apply when the game *starts*. If Deadlock was already open, restart it.
-* The **Launch Deadlock with console port** button makes Steam show a confirmation prompt, and the options are ignored if you dismiss it.
-* There's no way to open the console port after the game has started. It has to be a launch option.
+* The **Launch Deadlock with these options** button makes Steam show a confirmation prompt, and the options are ignored if you dismiss it.
+* There's no way to open a console port after the game has started. It has to be a launch option.
+* `-tools` is Valve's developer mode. In other Source 2 games it turns off online matchmaking for that session, so use it only for replay work and launch normally to play.
 
 ## Features
 
@@ -117,7 +126,8 @@ below come from community observer guides and the Source 2 engine. Every one of 
 
 | What | Default | Status |
 | --- | --- | --- |
-| Console port | `-netconport 2121` | A standard Source 2 engine option, used with CS:GO and CS2. **Not yet confirmed for Deadlock.** If the status stays on "waiting for console port", this is the cause. |
+| Console port | `-netconport 2121` | **Ignored by Deadlock in testing** (the port never opened). Kept in case Valve enables it. |
+| VConsole | `-tools`, port 29000 | How Valve's VConsole2 tool connects to CS2. **Not yet confirmed for Deadlock.** |
 | Move camera | `spec_goto x y z pitch yaw` | Community guides confirm `spec_goto` moves the spectator camera. Some report that **it ignores pitch/yaw** and only moves the position. If rotation doesn't follow, try the presets in Settings. The `setang` variants need `sv_cheats 1` in the replay. |
 | Read camera | `spec_pos` | Confirmed: prints X Y Z pitch yaw. The parser accepts any line with 5–6 numbers. |
 | Pause / resume / seek / speed | `demo_pause`, `demo_resume`, `demo_gototick`, `demo_timescale` | Standard Source 2 demo commands. Not verified against Deadlock's replay viewer. |
