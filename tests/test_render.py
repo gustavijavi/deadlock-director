@@ -92,3 +92,81 @@ def test_render_stops_when_asked(tmp_path):
                                stopped=lambda: len(calls) >= 5, progress=lambda i, n: calls.append(i))
     assert renderer.run(render.plan_frames(lambda t: (t, 0, 0, 0, 0), 1.0, 64)) == 5
     assert open(cfg).read().startswith('citadel_hud_visible true')  # HUD restored even when stopped
+
+
+class LoggingGame(FakeGame):
+    """Executes the exec'd cfg like Deadlock would and appends to console.log
+    in its format (timestamp prefix, one decimal in spec_pos output)."""
+
+    def __init__(self, cfg, logPath, **kwargs):
+        FakeGame.__init__(self, cfg, **kwargs)
+        self.logPath = logPath
+        self.camera = [0.0] * 5
+        open(logPath, 'w').write('10/22 09:00:00 Source2Init\n')
+
+    def tap(self):
+        FakeGame.tap(self)
+        out = []
+        for command in open(self.cfg).read().replace('\n', ';').split(';'):
+            parts = command.split()
+            if not parts:
+                continue
+            if parts[0] == 'spec_goto':
+                self.camera = [float(v) for v in parts[1:6]]
+            elif parts[0] == 'spec_pos':
+                out.append('spec_goto {:.1f} {:.1f} {:.1f} {:.1f} {:.1f}'.format(*self.camera))
+            elif parts[0] == 'echo':
+                out.append(' '.join(parts[1:]))
+        with open(self.logPath, 'a') as log:
+            for line in out:
+                log.write('10/22 09:00:01 ' + line + '\n')
+
+
+def test_render_confirmed_by_console_log(tmp_path):
+    cfg, logPath = str(tmp_path / 'ddir_frame.cfg'), str(tmp_path / 'console.log')
+    game = LoggingGame(cfg, logPath)
+    frames = render.plan_frames(orbit_path(CameraState(100, 200, 300, 15, 45)), 0.25, 64)
+
+    class Sink(object):
+        frames = 0
+
+        def write(self, image):
+            self.frames += 1
+
+    log = render.LogWatcher(logPath)
+    renderer = render.Renderer(cfg, TEMPLATE, game.tap, game.grab, Sink(), settle=0, sleep=lambda s: None, log=log)
+    assert renderer.run(frames) == len(frames)
+    assert all(r.confirmed for r in renderer.records)
+    assert max(r.positionError() for r in renderer.records) < 0.1  # spec_pos prints one decimal
+    summary = renderer.summary()
+    assert '{0} of {0} frames confirmed'.format(len(frames)) in summary
+    csv = str(tmp_path / 'frames.csv')
+    renderer.write_diagnostics(csv)
+    rows = open(csv).read().splitlines()
+    assert len(rows) == len(frames) + 1 and rows[1].startswith('0,1,')
+
+
+def test_render_reports_unconfirmed_frames(tmp_path):
+    """If the game never runs the cfg (bind missing), frames are flagged."""
+    cfg, logPath = str(tmp_path / 'ddir_frame.cfg'), str(tmp_path / 'console.log')
+    open(logPath, 'w').write('')
+    ticks = iter(range(10 ** 6))
+    renderer = render.Renderer(cfg, TEMPLATE, lambda: None, lambda: b'x', type('S', (), {'frames': 0, 'write': lambda s, i: None})(),
+                               settle=0, sleep=lambda s: None, log=render.LogWatcher(logPath),
+                               confirmTimeout=0.5, clock=lambda: next(ticks) * 0.1)
+    renderer.run(render.plan_frames(lambda t: (t, 0, 0, 0, 0), 0.05, 64))
+    assert not any(r.confirmed for r in renderer.records)
+    assert '0 of 4 frames confirmed' in renderer.summary()
+
+
+def test_log_watcher_handles_partial_lines(tmp_path):
+    path = str(tmp_path / 'console.log')
+    open(path, 'w').write('old line\n')
+    watcher = render.LogWatcher(path)
+    with open(path, 'a') as f:
+        f.write('10/22 09:00:01 DDIR_F1\n10/22 09:00:01 DDIR_')
+    assert watcher.lines() == ['DDIR_F1']
+    with open(path, 'a') as f:
+        f.write('F2\n')
+    assert watcher.lines() == ['DDIR_F2']
+    watcher.close()

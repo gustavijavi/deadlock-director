@@ -113,9 +113,9 @@ class PathTestDialog(QDialog):
         self.advance = QCheckBox('Replay plays during the shot (unticked = frozen moment)')
         self.advance.setChecked(True)
         form.addRow(self.advance)
-        self.settle = spin(20, 1000, 80, decimals=0, step=10, suffix=' ms')
-        self.settle.setToolTip('How long to give Deadlock to draw each frame before capturing. Raise it if the '
-                               'video shows repeated or half-updated frames.')
+        self.settle = spin(10, 1000, 60, decimals=0, step=10, suffix=' ms')
+        self.settle.setToolTip('After console.log confirms a frame\'s camera commands ran, how long to give Deadlock '
+                               'to draw and show it before capturing. Raise it if the video still stutters.')
         form.addRow('Wait per frame', self.settle)
         layout.addWidget(box)
         self.renderButton = button('Render to video (3 s countdown)', self._toggleRender, accent=True)
@@ -229,11 +229,13 @@ class PathTestDialog(QDialog):
         self.stopFlag.clear()
         self.renderButton.setText('Stop rendering')
         self.startButton.setEnabled(False)
-        args = (target, template, key, frames, fps, output, self.settle.value() / 1000.0)
+        logPath = self.logPath.text().strip()
+        args = (target, template, key, frames, fps, output, self.settle.value() / 1000.0,
+                logPath if os.path.isfile(logPath) else None)
         self.worker = threading.Thread(target=self._runRender, args=args, daemon=True)
         self.worker.start()
 
-    def _runRender(self, target, template, key, frames, fps, output, settle):
+    def _runRender(self, target, template, key, frames, fps, output, settle, logPath):
         for remaining in (3, 2, 1):
             if self.stopFlag.is_set():
                 self.signals.finished.emit('Stopped.')
@@ -245,22 +247,26 @@ class PathTestDialog(QDialog):
             self.signals.finished.emit('Deadlock was not the active window, so there was nothing to capture.')
             return
         started = time.perf_counter()
-        grabber = encoder = None
+        grabber = encoder = log = None
         try:
             grabber = capture.Grabber(rect)
             encoder = render.FfmpegEncoder(output, grabber.size, fps)
+            log = render.LogWatcher(logPath) if logPath else None
             renderer = render.Renderer(
                 target, template, lambda: keysender.tap(*key), grabber.grab, encoder, settle=settle,
-                isFocused=keysender.foreground_is_deadlock, stopped=self.stopFlag.is_set,
+                isFocused=keysender.foreground_is_deadlock, stopped=self.stopFlag.is_set, log=log,
                 progress=lambda i, n: self.signals.status.emit('Rendering frame {} / {}'.format(i, n)))
             with keysender.precise_timer():
                 written = renderer.run(frames)
+            renderer.write_diagnostics(os.path.splitext(output)[0] + '_frames.csv')
         except Exception as error:
             self.signals.finished.emit('Render failed: {}'.format(error))
             return
         finally:
             if grabber:
                 grabber.close()
+            if log:
+                log.close()
             code = encoder.close() if encoder else None
         took = time.perf_counter() - started
         if code:
@@ -268,9 +274,11 @@ class PathTestDialog(QDialog):
             return
         stale = ' {} frames never changed on screen in time; raise "Wait per frame" if you see stutter.'.format(
             renderer.stale) if renderer.stale else ''
-        self.signals.finished.emit('{}Rendered {} frames ({}x{}, {:.1f} s of video) in {:.0f} s.{}\n\nSaved to {}'.format(
+        sync = renderer.summary() if logPath else ' console.log not set, so frames were not confirmed by the game.'
+        self.signals.finished.emit('{}Rendered {} frames ({}x{}, {:.1f} s of video) in {:.0f} s.{}{}\n\nSaved to {}\n'
+                                   'Per-frame details: {}'.format(
             'Stopped early. ' if self.stopFlag.is_set() else '', written, grabber.size[0], grabber.size[1],
-            written / float(fps), took, stale, output))
+            written / float(fps), took, sync, stale, output, os.path.splitext(output)[0] + '_frames.csv'))
 
     def _run(self, target, path, template, scancode, extended, duration, rate):
         for remaining in (3, 2, 1):

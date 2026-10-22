@@ -16,7 +16,7 @@ import subprocess
 import sys
 import time
 
-from deadlockdirector import pathtest
+from deadlockdirector import console, pathtest
 
 PREAMBLE = 'demo_pause; citadel_hud_visible false; citadel_hide_replay_hud true'
 POSTAMBLE = 'citadel_hud_visible true; citadel_hide_replay_hud false'
@@ -91,11 +91,61 @@ class FfmpegEncoder(object):
         return code
 
 
+class LogWatcher(object):
+    """Follows Deadlock's -condebug console.log from its current end."""
+
+    def __init__(self, path):
+        self.file = open(path, 'rb')
+        self.file.seek(0, os.SEEK_END)
+        self.partial = b''
+
+    def lines(self):
+        data = self.file.read()
+        if not data:
+            return []
+        data = self.partial + data
+        complete, _, self.partial = data.rpartition(b'\n')
+        if not complete and not _:
+            self.partial = data
+            return []
+        return [console.clean_line(l.decode('utf-8', errors='replace')) for l in complete.split(b'\n')]
+
+    def close(self):
+        self.file.close()
+
+
+def marker(index):
+    return 'DDIR_F{}'.format(index)
+
+
+class FrameRecord(object):
+    __slots__ = ('index', 'intended', 'actual', 'confirmMs', 'confirmed')
+
+    def __init__(self, index, intended):
+        self.index = index
+        self.intended = intended
+        self.actual = None
+        self.confirmMs = None
+        self.confirmed = False
+
+    def positionError(self):
+        if self.actual is None:
+            return None
+        return math.dist(self.intended[:3], self.actual.position)
+
+
 class Renderer(object):
+    """Renders frames in lockstep with the game.
+
+    With a LogWatcher, each frame's cfg ends in `spec_pos; echo DDIR_F<n>`:
+    the marker appearing in console.log proves the camera commands ran, and
+    the spec_pos line just before it records where the camera really was.
+    Without one, it falls back to waiting until the captured image changes.
+    """
 
     def __init__(self, cfgPath, template, tap, grab, encoder, settle=0.08, tickTime=1 / 64.0,
                  maxWait=0.75, isFocused=lambda: True, stopped=lambda: False, progress=lambda i, n: None,
-                 sleep=time.sleep):
+                 sleep=time.sleep, log=None, confirmTimeout=2.0, clock=time.perf_counter):
         self.cfgPath = cfgPath
         self.template = template
         self.tap = tap
@@ -108,7 +158,11 @@ class Renderer(object):
         self.stopped = stopped
         self.progress = progress
         self.sleep = sleep
+        self.log = log
+        self.confirmTimeout = confirmTimeout
+        self.clock = clock
         self.stale = 0  # frames that never changed on screen within maxWait
+        self.records = []
 
     def _send(self, text):
         while not pathtest.write_frame(self.cfgPath, text):
@@ -120,6 +174,25 @@ class Renderer(object):
         self.tap()
         return True
 
+    def _confirm(self, record, sentAt):
+        """Wait for this frame's marker in console.log."""
+        token = marker(record.index)
+        seen = []
+        while self.clock() - sentAt < self.confirmTimeout:
+            for line in self.log.lines():
+                if token == line.strip():
+                    record.confirmed = True
+                    record.confirmMs = (self.clock() - sentAt) * 1000.0
+                    for previous in reversed(seen):
+                        state = console.parse_camera(previous)
+                        if state is not None and 'spec_goto' in previous:
+                            record.actual = state
+                            break
+                    return True
+                seen.append(line)
+            self.sleep(0.002)
+        return False
+
     def run(self, frames):
         """Render every frame. Returns the number of frames written."""
         self._send(PREAMBLE)
@@ -129,23 +202,58 @@ class Renderer(object):
             for index, (camera, steps) in enumerate(frames):
                 if self.stopped():
                     break
-                if not self._send(frame_text(self.template, camera, steps)):
+                record = FrameRecord(index, camera)
+                self.records.append(record)
+                text = frame_text(self.template, camera, steps)
+                if self.log is not None:
+                    text += '; spec_pos; echo {}'.format(marker(index))
+                if not self._send(text):
                     break
-                self.sleep(self.settle + steps * self.tickTime)
-                image = self.grab()
-                # If the view should have changed but the screen hasn't caught
-                # up yet, keep waiting a little instead of writing a duplicate.
-                expectChange = camera != previousCamera or steps
-                waited = 0.0
-                while expectChange and previousImage is not None and image == previousImage and waited < self.maxWait:
-                    self.sleep(0.02)
-                    waited += 0.02
+                sentAt = self.clock()
+                if self.log is not None:
+                    self._confirm(record, sentAt)
+                    # Commands ran; give the game a few frames to draw and present.
+                    self.sleep(self.settle + steps * self.tickTime)
                     image = self.grab()
-                if expectChange and previousImage is not None and image == previousImage:
-                    self.stale += 1
+                else:
+                    self.sleep(self.settle + steps * self.tickTime)
+                    image = self.grab()
+                    # If the view should have changed but the screen hasn't caught
+                    # up yet, keep waiting a little instead of writing a duplicate.
+                    expectChange = camera != previousCamera or steps
+                    waited = 0.0
+                    while expectChange and previousImage is not None and image == previousImage and waited < self.maxWait:
+                        self.sleep(0.02)
+                        waited += 0.02
+                        image = self.grab()
+                    if expectChange and previousImage is not None and image == previousImage:
+                        self.stale += 1
                 self.encoder.write(image)
                 previousImage, previousCamera = image, camera
                 self.progress(index + 1, len(frames))
         finally:
             self._send(POSTAMBLE)
         return self.encoder.frames
+
+    def summary(self):
+        """Human-readable sync statistics for the report."""
+        if self.log is None or not self.records:
+            return ''
+        confirmed = [r for r in self.records if r.confirmed]
+        text = ' {} of {} frames confirmed by the game'.format(len(confirmed), len(self.records))
+        if confirmed:
+            times = sorted(r.confirmMs for r in confirmed)
+            text += ' (typically {:.0f} ms, worst {:.0f} ms)'.format(times[len(times) // 2], times[-1])
+        errors = [r.positionError() for r in confirmed if r.positionError() is not None]
+        if errors:
+            text += '; camera landed within {:.1f} units of the path'.format(max(errors))
+        return text + '.'
+
+    def write_diagnostics(self, path):
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write('frame,confirmed,confirm_ms,x,y,z,pitch,yaw,actual_x,actual_y,actual_z,actual_pitch,actual_yaw\n')
+            for r in self.records:
+                actual = (r.actual.position + r.actual.rotation[:2]) if r.actual else [''] * 5
+                f.write(','.join(str(v) for v in [r.index, int(r.confirmed),
+                                                   '' if r.confirmMs is None else round(r.confirmMs, 1)]
+                                 + [round(v, 2) for v in r.intended] + list(actual)) + '\n')
