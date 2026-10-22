@@ -57,9 +57,13 @@ def ffmpeg_exe():
 
 
 class FfmpegEncoder(object):
-    """Pipe raw BGRA frames into ffmpeg and get an H.264 MP4 out."""
+    """Pipe raw BGRA frames into ffmpeg and get an H.264 MP4 out.
 
-    def __init__(self, path, size, fps, crf=14, exe=None):
+    With blur > 1 every `blur` consecutive input frames are averaged into one
+    output frame (motion blur), so the input runs at fps * blur.
+    """
+
+    def __init__(self, path, size, fps, crf=14, exe=None, blur=1):
         exe = exe or ffmpeg_exe()
         if not exe:
             raise RuntimeError('ffmpeg is not available')
@@ -68,9 +72,12 @@ class FfmpegEncoder(object):
         self.logPath = path + '.ffmpeg.log'
         self.log = open(self.logPath, 'wb')
         flags = 0x08000000 if sys.platform == 'win32' else 0  # CREATE_NO_WINDOW
+        blur = max(1, int(blur))
+        filters = ['-vf', 'tmix=frames={0},framestep={0}'.format(blur)] if blur > 1 else []
         self.process = subprocess.Popen(
             [exe, '-y', '-f', 'rawvideo', '-pix_fmt', 'bgra', '-s', '{}x{}'.format(width, height),
-             '-framerate', str(fps), '-i', '-', '-c:v', 'libx264', '-preset', 'medium', '-crf', str(crf),
+             '-framerate', str(fps * blur), '-i', '-'] + filters +
+            ['-c:v', 'libx264', '-preset', 'medium', '-crf', str(crf),
              '-pix_fmt', 'yuv420p', '-movflags', '+faststart', path],
             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=self.log, creationflags=flags)
         self.frames = 0
@@ -89,6 +96,25 @@ class FfmpegEncoder(object):
         if code == 0:
             os.remove(self.logPath)
         return code
+
+
+class RenderError(Exception):
+    pass
+
+
+def check_log(cfgPath, tap, log, timeout=3.0, sleep=time.sleep, clock=time.perf_counter):
+    """Prove the exec bind and console.log both work before a long render:
+    run `echo DDIR_HELLO` through the bind and wait for it in the log."""
+    token = 'DDIR_HELLO{}'.format(int(clock() * 1000) % 100000)
+    while not pathtest.write_frame(cfgPath, 'echo ' + token):
+        sleep(0.005)
+    tap()
+    start = clock()
+    while clock() - start < timeout:
+        if any(line.strip() == token for line in log.lines()):
+            return True
+        sleep(0.01)
+    return False
 
 
 class LogWatcher(object):
@@ -145,7 +171,7 @@ class Renderer(object):
 
     def __init__(self, cfgPath, template, tap, grab, encoder, settle=0.08, tickTime=1 / 64.0,
                  maxWait=0.75, isFocused=lambda: True, stopped=lambda: False, progress=lambda i, n: None,
-                 sleep=time.sleep, log=None, confirmTimeout=2.0, clock=time.perf_counter):
+                 sleep=time.sleep, log=None, confirmTimeout=2.0, clock=time.perf_counter, maxMissed=5):
         self.cfgPath = cfgPath
         self.template = template
         self.tap = tap
@@ -161,6 +187,7 @@ class Renderer(object):
         self.log = log
         self.confirmTimeout = confirmTimeout
         self.clock = clock
+        self.maxMissed = maxMissed
         self.stale = 0  # frames that never changed on screen within maxWait
         self.records = []
 
@@ -198,6 +225,7 @@ class Renderer(object):
         self._send(PREAMBLE)
         self.sleep(0.25)
         previousImage = previousCamera = None
+        missed = 0
         try:
             for index, (camera, steps) in enumerate(frames):
                 if self.stopped():
@@ -211,7 +239,13 @@ class Renderer(object):
                     break
                 sentAt = self.clock()
                 if self.log is not None:
-                    self._confirm(record, sentAt)
+                    if self._confirm(record, sentAt):
+                        missed = 0
+                    else:
+                        missed += 1
+                        if missed >= self.maxMissed:
+                            raise RenderError('Deadlock stopped confirming frames in console.log ({} in a row). '
+                                              'Was the console opened or the window switched?'.format(missed))
                     # Commands ran; give the game a few frames to draw and present.
                     self.sleep(self.settle + steps * self.tickTime)
                     image = self.grab()

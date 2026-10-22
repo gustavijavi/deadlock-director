@@ -170,3 +170,38 @@ def test_log_watcher_handles_partial_lines(tmp_path):
         f.write('F2\n')
     assert watcher.lines() == ['DDIR_F2']
     watcher.close()
+
+
+def test_motion_blur_blends_samples(tmp_path):
+    if not render.ffmpeg_exe():
+        pytest.skip('ffmpeg not available')
+    out = str(tmp_path / 'blur.mp4')
+    encoder = render.FfmpegEncoder(out, (16, 16), 64, blur=4)
+    for i in range(32):  # 32 samples -> 8 output frames
+        encoder.write(bytes([i * 8 % 256, 0, 0, 255]) * 256)
+    assert encoder.close() == 0
+    probe = subprocess.run([render.ffmpeg_exe(), '-i', out, '-f', 'null', '-'], capture_output=True, text=True)
+    assert int(re.findall(r'frame=\s*(\d+)', probe.stderr)[-1]) == 8
+    assert ' 64 fps' in probe.stderr
+
+
+def test_check_log(tmp_path):
+    cfg, logPath = str(tmp_path / 'ddir_frame.cfg'), str(tmp_path / 'console.log')
+    game = LoggingGame(cfg, logPath)
+    assert render.check_log(cfg, game.tap, render.LogWatcher(logPath), sleep=lambda s: None)
+    ticks = iter(range(10 ** 6))
+    assert not render.check_log(cfg, lambda: None, render.LogWatcher(logPath), timeout=1.0,
+                                sleep=lambda s: None, clock=lambda: next(ticks) * 0.1)
+
+
+def test_render_stops_after_repeated_misses(tmp_path):
+    cfg, logPath = str(tmp_path / 'ddir_frame.cfg'), str(tmp_path / 'console.log')
+    open(logPath, 'w').write('')
+    ticks = iter(range(10 ** 6))
+    renderer = render.Renderer(cfg, TEMPLATE, lambda: None, lambda: b'x', type('S', (), {'frames': 0, 'write': lambda s, i: None})(),
+                               settle=0, sleep=lambda s: None, log=render.LogWatcher(logPath), maxMissed=3,
+                               confirmTimeout=0.5, clock=lambda: next(ticks) * 0.1)
+    with pytest.raises(render.RenderError):
+        renderer.run(render.plan_frames(lambda t: (t, 0, 0, 0, 0), 1.0, 64))
+    assert len(renderer.records) == 3
+    assert open(cfg).read().startswith('citadel_hud_visible true')  # HUD restored on failure too

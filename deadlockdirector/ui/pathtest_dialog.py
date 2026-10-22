@@ -73,9 +73,11 @@ class PathTestDialog(QDialog):
         form = QFormLayout(box)
         self.startLabel = label('Not read yet', 'value')
         form.addRow(button('Read start position', self._readStart), self.startLabel)
-        self.distance = spin(100, 5000, 600, decimals=0, step=50)
+        self.distance = spin(100, 5000, 400, decimals=0, step=50)
+        self.distance.setToolTip('Distance from the camera to the point it orbits. Keep it small enough that the '
+                                 'circle stays clear of walls.')
         form.addRow('Orbit radius (units)', self.distance)
-        self.duration = spin(2, 60, 8, decimals=1, step=1, suffix=' s')
+        self.duration = spin(2, 60, 12, decimals=1, step=1, suffix=' s')
         form.addRow('Duration', self.duration)
         self.rate = QComboBox()
         for rate in (30, 60, 90, 120, 144):
@@ -113,7 +115,15 @@ class PathTestDialog(QDialog):
         self.advance = QCheckBox('Replay plays during the shot (unticked = frozen moment)')
         self.advance.setChecked(True)
         form.addRow(self.advance)
-        self.settle = spin(10, 1000, 60, decimals=0, step=10, suffix=' ms')
+        self.blur = QComboBox()
+        for count, text in ((1, 'Off'), (2, '2 samples per frame'), (4, '4 samples per frame (recommended)'),
+                            (8, '8 samples per frame')):
+            self.blur.addItem(text, count)
+        self.blur.setCurrentIndex(2)
+        self.blur.setToolTip('Renders several in-between camera positions per video frame and blends them, like a '
+                             'real camera shutter. Makes pans look smooth instead of strobing. Multiplies render time.')
+        form.addRow('Motion blur', self.blur)
+        self.settle = spin(10, 1000, 80, decimals=0, step=10, suffix=' ms')
         self.settle.setToolTip('After console.log confirms a frame\'s camera commands ran, how long to give Deadlock '
                                'to draw and show it before capturing. Raise it if the video still stutters.')
         form.addRow('Wait per frame', self.settle)
@@ -219,23 +229,29 @@ class PathTestDialog(QDialog):
         if not render.ffmpeg_exe():
             self.statusLabel.setText('The bundled ffmpeg is missing, so video can not be encoded.')
             return
+        logPath = self.logPath.text().strip()
+        if not os.path.isfile(logPath):
+            self.statusLabel.setText('Set console.log first (launch Deadlock with -condebug). The render uses it to '
+                                     'confirm every frame, which is what keeps the video from stuttering.')
+            return
         output = self.output.text().strip()
         if not output.lower().endswith('.mp4'):
             output += '.mp4'
         self.settings.set_value('pathtest/output', output)
         target, path, template, key = prepared
         fps = int(self.fps.value())
-        frames = render.plan_frames(path, self.duration.value(), fps, 1.0 if self.advance.isChecked() else 0.0)
+        blur = self.blur.currentData()
+        # One replay tick per output frame at 64 fps, spread across the blur samples.
+        ticks = 64.0 / (fps * blur) if self.advance.isChecked() else 0.0
+        frames = render.plan_frames(path, self.duration.value(), fps * blur, ticks)
         self.stopFlag.clear()
         self.renderButton.setText('Stop rendering')
         self.startButton.setEnabled(False)
-        logPath = self.logPath.text().strip()
-        args = (target, template, key, frames, fps, output, self.settle.value() / 1000.0,
-                logPath if os.path.isfile(logPath) else None)
+        args = (target, template, key, frames, fps, output, self.settle.value() / 1000.0, logPath, blur)
         self.worker = threading.Thread(target=self._runRender, args=args, daemon=True)
         self.worker.start()
 
-    def _runRender(self, target, template, key, frames, fps, output, settle, logPath):
+    def _runRender(self, target, template, key, frames, fps, output, settle, logPath, blur):
         for remaining in (3, 2, 1):
             if self.stopFlag.is_set():
                 self.signals.finished.emit('Stopped.')
@@ -246,12 +262,20 @@ class PathTestDialog(QDialog):
         if rect is None:
             self.signals.finished.emit('Deadlock was not the active window, so there was nothing to capture.')
             return
+        log = render.LogWatcher(logPath)
+        if not render.check_log(target, lambda: keysender.tap(*key), log):
+            log.close()
+            self.signals.finished.emit(
+                'Deadlock did not answer through console.log, so nothing was rendered. Check that:\n'
+                '• the console.log path is the file Deadlock is writing right now (launched with -condebug),\n'
+                '• the bind is set: {} \n'
+                '• the console is closed and Deadlock is the active window.'.format(self.bind.text()))
+            return
         started = time.perf_counter()
-        grabber = encoder = log = None
+        grabber = encoder = None
         try:
             grabber = capture.Grabber(rect)
-            encoder = render.FfmpegEncoder(output, grabber.size, fps)
-            log = render.LogWatcher(logPath) if logPath else None
+            encoder = render.FfmpegEncoder(output, grabber.size, fps, blur=blur)
             renderer = render.Renderer(
                 target, template, lambda: keysender.tap(*key), grabber.grab, encoder, settle=settle,
                 isFocused=keysender.foreground_is_deadlock, stopped=self.stopFlag.is_set, log=log,
@@ -265,8 +289,7 @@ class PathTestDialog(QDialog):
         finally:
             if grabber:
                 grabber.close()
-            if log:
-                log.close()
+            log.close()
             code = encoder.close() if encoder else None
         took = time.perf_counter() - started
         if code:
@@ -274,7 +297,8 @@ class PathTestDialog(QDialog):
             return
         stale = ' {} frames never changed on screen in time; raise "Wait per frame" if you see stutter.'.format(
             renderer.stale) if renderer.stale else ''
-        sync = renderer.summary() if logPath else ' console.log not set, so frames were not confirmed by the game.'
+        sync = renderer.summary()
+        written = written // blur
         self.signals.finished.emit('{}Rendered {} frames ({}x{}, {:.1f} s of video) in {:.0f} s.{}{}\n\nSaved to {}\n'
                                    'Per-frame details: {}'.format(
             'Stopped early. ' if self.stopFlag.is_set() else '', written, grabber.size[0], grabber.size[1],
